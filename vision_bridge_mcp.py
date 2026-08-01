@@ -169,7 +169,7 @@ def clamp_box(box, w, h):
     return _clamp_list(box, w, h)
 
 def extract_json(text):
-    """从模型输出中稳健提取 JSON 对象或数组。"""
+    """从模型输出中稳健提取 JSON 对象或数组（容忍代码块、多余尾巴、LaTeX 等）。"""
     text = (text or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
@@ -177,13 +177,16 @@ def extract_json(text):
         return json.loads(text)
     except Exception:
         pass
-    for pat in (r"\{.*\}", r"\[.*\]"):
-        m = re.search(pat, text, re.S)
-        if m:
+    # 逐位置 raw_decode：处理"JSON + 尾巴"或"文本 + JSON"混合输出
+    dec = json.JSONDecoder()
+    for i in range(len(text)):
+        ch = text[i]
+        if ch in "{[":
             try:
-                return json.loads(m.group(0))
+                obj, _ = dec.raw_decode(text[i:])
+                return obj
             except Exception:
-                pass
+                continue
     raise VisionError(f"视觉模型未返回有效 JSON: {text[:400]}")
 
 def _font(size):

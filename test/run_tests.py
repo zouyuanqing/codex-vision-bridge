@@ -303,6 +303,18 @@ def test_zoom(api_base):
     res2 = vb.tool_zoom_region({"image": p, "scale": 3})
     check("zoom full", res2["size"] == [600, 300], str(res2))
 
+
+def test_extract_json_robust():
+    import vision_bridge_mcp as vb
+    r1 = vb.extract_json('{"a":1} 多余文字')
+    check("ej tail", r1 == {"a": 1}, str(r1))
+    r2 = vb.extract_json('{"visual_primitives":[{"box":[200,100,300,900]}]}\n最终答案是 boxed')
+    check("ej latex tail", r2["visual_primitives"][0]["box"] == [200, 100, 300, 900], str(r2))
+    r3 = vb.extract_json('前缀文本 {"b": [1,2]} 尾巴')
+    check("ej prefix", r3 == {"b": [1, 2]}, str(r3))
+    r4 = vb.extract_json('```json\n{"c": 3}\n```')
+    check("ej fence", r4 == {"c": 3}, str(r4))
+
 def test_coord_utils():
     import vision_bridge_mcp as vb
     pts, clamped = vb.to_pixel([500, 500, 1000, 1000], 800, 500, "norm")
@@ -633,6 +645,8 @@ def main():
     test_annotate(api_base)
     test_crop(api_base)
     test_zoom(api_base)
+    print("== extract_json 稳健性 ==")
+    test_extract_json_robust()
     print("== 坐标工具 ==")
     test_coord_utils()
     print("== 校验分支 ==")
