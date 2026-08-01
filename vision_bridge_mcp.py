@@ -921,11 +921,17 @@ def _draw_annot_overlay(draw, aid, typ, label, color, geo, lw, fnt):
         draw.text((tx, ty), txt, fill="#111111", font=fnt)
 
 MAX_MODEL_SIDE = _env_int("VISION_MAX_MODEL_SIDE", 2600)
+NORM_SIZE = _env_int("VISION_NORM_SIZE", 0)
 
 def _fit_model(img):
-    """大图降采样到视觉模型友好的尺寸。返回 (模型图, scale_x, scale_y)。"""
+    """把图归一化到视觉模型友好的尺寸。返回 (模型图, scale_x, scale_y)。
+    NORM_SIZE>0 时精确归一化到目标长边（保持纵横比）；否则仅限制 MAX_MODEL_SIDE 上限。"""
     w, h = img.size
     m = max(w, h)
+    if NORM_SIZE > 0:
+        s = NORM_SIZE / m
+        nw, nh = max(1, round(w * s)), max(1, round(h * s))
+        return img.resize((nw, nh), Image.LANCZOS), w / nw, h / nh
     if m <= MAX_MODEL_SIDE:
         return img, 1.0, 1.0
     s = MAX_MODEL_SIDE / m

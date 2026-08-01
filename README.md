@@ -98,6 +98,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-bridge-mcp/generated'
 | `VISION_DISABLE_THINKING` | `0` | LM Studio 思考型视觉模型（minicpm-v-4_5 等）设 `1` 避免 content 为空 |
 | `VISION_NO_SYSTEM` | `0` | 本地小模型 system 消息可能触发空响应，设 `1` 跳过 system 消息 |
 | `VISION_MAX_MODEL_SIDE` | `2600` | 送模型的图像长边上限（px），调大可提高输入分辨率 |
+| `VISION_NORM_SIZE` | `0` | >0 时精确归一化图像长边到该尺寸（保持纵横比，坐标自动换算回原图），用于对齐模型原生分辨率 |
 
 ## 交互工作流示例
 
@@ -250,3 +251,12 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
 - 本地模型实测对比（同一 benchmark）：
   - `qwen3.5-9b`：describe/OCR 优秀（<15s）；**定位不可用**（按钮误差 210px、颜色-位置映射错误）
   - `minicpm-v-4_5`：describe/OCR 优秀（bbox 准确）；**定位可用**（x 方向精确命中，y 方向系统性偏上 ~90px）；偶发 400（LM Studio peg 格式校验）
+
+
+## v1.8.3（2026-08-02）
+
+- 新增 `VISION_NORM_SIZE`：客户端精确归一化图像到目标长边（默认 0=仅上限），坐标自动换算回原图
+- 归一化校准实验（minicpm-v-4_5，红圆定位，448/640/896/1152/1280/1600px）：
+  - 误差 60~337px **随机波动**，无稳定"原生分辨率最优"规律 → 该模型定位误差主因是空间理解波动，非服务端缩放
+  - 归一化价值在于**确定性**与适配有原生分辨率偏好的模型（如 Qwen-VL 系）；对抗随机性建议用 `VISION_SAMPLES` 多次取样中位数
+- 测试增至 **104 项**（mock，不依赖真实 key）

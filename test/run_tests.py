@@ -339,6 +339,22 @@ def test_validation(api_base):
         check("validation bad box", "box 必须是" in str(e), str(e))
 
 
+
+def test_fit_model_norm():
+    import vision_bridge_mcp as vb
+    from PIL import Image
+    img = Image.new("RGB", (800, 500))
+    old_norm, old_max = vb.NORM_SIZE, vb.MAX_MODEL_SIDE
+    try:
+        vb.NORM_SIZE = 400
+        mimg, sx, sy = vb._fit_model(img)
+        check("norm size exact", mimg.size == (400, 250) and abs(sx - 2.0) < 0.01, f"{mimg.size} {sx}")
+        vb.NORM_SIZE = 0
+        mimg2, sx2, sy2 = vb._fit_model(img)
+        check("norm off keeps small", mimg2.size == (800, 500) and sx2 == 1.0, f"{mimg2.size}")
+    finally:
+        vb.NORM_SIZE, vb.MAX_MODEL_SIDE = old_norm, old_max
+
 def test_median_aggregation():
     import vision_bridge_mcp as vb
     # 两次采样：同一目标（不同 label/轻微坐标抖动）+ 一个独立目标
@@ -621,6 +637,8 @@ def main():
     test_coord_utils()
     print("== 校验分支 ==")
     test_validation(api_base)
+    print("== 归一化 ==")
+    test_fit_model_norm()
     print("== 多取样聚合 ==")
     test_median_aggregation()
     print("== 工具增强 ==")
