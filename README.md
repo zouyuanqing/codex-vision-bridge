@@ -53,6 +53,10 @@
 **多图联合推理**（`compare_infer`：UI 测试图 + 电源框图联合分析，带标注叠加）：
 
 ![多图联合推理演示](docs/demo-compare-infer.png)
+**模型对比矩阵**（MiMo V2.5 vs LM Studio 本地模型，同一 benchmark 实测）：
+
+![模型对比矩阵](docs/demo-model-matrix.png)
+
 ## 安装与配置
 
 ### 1. 在 `~/.codex/config.toml` 追加
