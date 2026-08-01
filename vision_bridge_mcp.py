@@ -389,7 +389,7 @@ def _box_center(p):
         return (float(x), float(y), 0.0, 0.0)
     return None
 PRIMITIVE_PROMPT = (
-    "请定位并输出 JSON（不要输出任何其他文字，不要用代码块）:\n"
+    "请定位并输出 JSON（不要输出任何其他文字；可用 ```json 代码块包裹）:\n"
     '{"visual_primitives":[{"id":"v1","type":"box","label":"简短标签","box":[x1,y1,x2,y2],"confidence":0.9,"rotation":0}]}\n'
     "- box 为像素坐标 [x1,y1,x2,y2]（左上角、右下角），必须包含目标元件本体和全部引脚焊盘的完整边界框，图像实际宽 W px、高 H px，坐标必须在 0..W / 0..H 范围内。\n"
     "- 列出所有可疑目标（不只一个），每个目标一条。\n"
@@ -914,7 +914,7 @@ def _draw_annot_overlay(draw, aid, typ, label, color, geo, lw, fnt):
         ty = rect[1] + max(0, (rect[3] - rect[1] - th) // 2)
         draw.text((tx, ty), txt, fill="#111111", font=fnt)
 
-MAX_MODEL_SIDE = 2600
+MAX_MODEL_SIDE = _env_int("VISION_MAX_MODEL_SIDE", 2600)
 
 def _fit_model(img):
     """大图降采样到视觉模型友好的尺寸。返回 (模型图, scale_x, scale_y)。"""

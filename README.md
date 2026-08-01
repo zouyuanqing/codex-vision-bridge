@@ -49,6 +49,10 @@
 **区域放大**（`zoom_region`，2 倍放大便于细节识别）：
 
 ![放大演示](docs/demo-zoom.png)
+
+**多图联合推理**（`compare_infer`：UI 测试图 + 电源框图联合分析，带标注叠加）：
+
+![多图联合推理演示](docs/demo-compare-infer.png)
 ## 安装与配置
 
 ### 1. 在 `~/.codex/config.toml` 追加
@@ -219,3 +223,10 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
   - `session` 跨轮传递（primitives/annotations/semantics/hypotheses），主模型可多轮循环直到收敛
   - 实测（mermaid 电源框图）：locate 2 节点 → 程序化测距 833px → 提出"LDO 输入来自 TD1583"假设 → 模型验证成立 → next 给出后续推理建议
 - 测试增至 **102 项**（mock，不依赖真实 key）
+
+
+## v1.8.1（2026-08-02）
+
+- `PRIMITIVE_PROMPT` 兼容小模型：允许 ```json 代码块包裹输出（修复 qwen3.5-9b 等本地小模型"禁止代码块"指令下输出空响应的问题）
+- `MAX_MODEL_SIDE` 环境变量化（`VISION_MAX_MODEL_SIDE`，默认 2600）——调大可提高输入分辨率（实测对 LM Studio 端到端定位精度无显著帮助，服务端有固定缩放）
+- 本地多后端实测（LM Studio qwen3.5-9b）：describe/OCR 中文优秀（<15s）；**定位精度弱**（按钮误差 210px，粗框偏移导致 refine 失效）——精细定位建议用 grounding 较强的云端模型（MiMo V2.5 refine 后误差 20px）
