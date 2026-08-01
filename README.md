@@ -9,7 +9,7 @@
 - 协议：手写 MCP stdio（JSON-RPC 2.0 + Content-Length 帧），兼容 Codex 桌面端/CLI
 - 灵感来源：HanaAgent 的 Vision Bridge（辅助视觉模型 + 结构化"视觉原语"）+ DeepSeek《Thinking with Visual Primitives》（坐标框/点 + 标签）
 
-## 工具一览（9 个）
+## 工具一览（10 个）
 
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
@@ -20,7 +20,9 @@
 | `annotate_image` | 在图上画框/圆点/标签，保存标注图 | `image`、`items` 必填；`coords`、`out_path`、`style` |
 | `crop_image` | 按坐标裁切（可边缘外扩 expand_px） | `image`、`box` 必填；`coords`、`expand_px` |
 | `zoom_region` | 区域放大（scale 1-8） | `image` 必填；`box`、`scale` |
-| `vision_health` | 检查后端配置与连通性 | 无 |`n| `scan_anomalies` | **自动异常扫描**：切块定位候选 → 高清逐点验证 → 输出带角度/丝印/置信度的报告 | `image` 必填；`target`、`region`、`verify`、`max_tiles` |
+| `vision_health` | 检查后端配置与连通性 | 无 |
+| `compare_images` | **多图对比**（2-4 张）：A/B 截图对比、设计稿一致性、多帧分析 | `images` 必填（2-4 张）；`question`、`detail` |
+| `scan_anomalies` | **自动异常扫描**：切块定位候选 → 高清逐点验证 → 输出带角度/丝印/置信度的报告 | `image` 必填；`target`、`region`、`verify`、`max_tiles` |
 
 坐标系统：所有工具接受 `coords="pixel"`（默认，MiMo 实测更准）或 `coords="norm"`（0–1000 归一化）；越界坐标自动钳制并返回 `clamped: true`。
 
