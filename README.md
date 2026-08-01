@@ -9,7 +9,7 @@
 - 协议：手写 MCP stdio（JSON-RPC 2.0 + Content-Length 帧），兼容 Codex 桌面端/CLI
 - 灵感来源：HanaAgent 的 Vision Bridge（辅助视觉模型 + 结构化"视觉原语"）+ DeepSeek《Thinking with Visual Primitives》（坐标框/点 + 标签）
 
-## 工具一览（11 个）
+## 工具一览（13 个）
 
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
@@ -22,6 +22,8 @@
 | `zoom_region` | 区域放大（scale 1-8） | `image` 必填；`box`、`scale` |
 | `vision_health` | 检查后端配置与连通性 | 无 |
 | `compare_images` | **多图对比**（2-4 张）：A/B 截图对比、设计稿一致性、多帧分析 | `images` 必填（2-4 张）；`question`、`detail` |
+| `compare_infer` | **多图联合推理**：每图可带独立标注，联合推理差异/因果/时序/整体结论 | `images`、`question` 必填；`items_per_image`、`mode` |
+| `reason_graph` | **交互式图形推理协议**：原语(locate/measure) → 语义(semantic/hypothesis) → 标注(annotate/verify) 多轮循环，session 跨轮传递 | `image`、`step` 必填；`session`、`question` |
 | `annotate_infer` | **虚拟标注 + 图形推理**：框/点/连线/箭头/圆/多边形/气泡注入视觉模型（原图零修改或半透明叠加），支持多轮修正与自动框选 | `image`、`question` 必填；`items`/`auto_boxes` 至少其一；`mode`、`alpha`、`corrections` |
 | `scan_anomalies` | **自动异常扫描**：切块定位候选 → 高清逐点验证 → 输出带角度/丝印/置信度的报告 | `image` 必填；`target`、`region`、`verify`、`max_tiles` |
 
@@ -206,3 +208,14 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
 - 根因：MiMo 视觉 token 粒度粗（200×100 图仅 18 个 image token）+ 无 grounding 专用训练 + 推理采样波动
 - 对比度强、形状规则的几何体（圆形/色块）定位 **0 误差**；圆角按钮/文字/PCB 元件边缘模糊时偏差 20-70px
 - 缓解手段（已内置）：`refine` 两阶段精修、`VISION_SAMPLES` 多次取样中位数、`scan_anomalies` 逐点验证、坐标钳制
+
+
+## v1.8（2026-08-02）
+
+- 新增 `compare_infer`：**多图联合推理**（2-4 张，每图可带独立标注 `items_per_image`，支持 virtual/overlay 模式）
+  - 实测：电源框图 + UI 测试图联合推理 → 正确得出"硬件供电 + 软件交互构成完整系统"的跨域结论
+- 新增 `reason_graph`：**原语-语义-标注交互式推理协议**
+  - `step` 七种动作：`locate`（定位，支持 refine）/ `measure`（程序化测量：distance/angle/area，零 API 成本）/ `annotate`（固化为标注+叠加图）/ `semantic`（语义记录）/ `hypothesis`（假设）/ `verify`（虚拟标注验证）/ `next`（下一步建议）
+  - `session` 跨轮传递（primitives/annotations/semantics/hypotheses），主模型可多轮循环直到收敛
+  - 实测（mermaid 电源框图）：locate 2 节点 → 程序化测距 833px → 提出"LDO 输入来自 TD1583"假设 → 模型验证成立 → next 给出后续推理建议
+- 测试增至 **102 项**（mock，不依赖真实 key）

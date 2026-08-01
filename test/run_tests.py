@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 11 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 13 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -493,6 +493,68 @@ def test_annotate_infer(api_base):
     except vb.VisionError as e:
         check("ai bad type", "不支持的标注类型" in str(e), str(e))
 
+
+def test_compare_infer(api_base):
+    import vision_bridge_mcp as vb
+    reset_mock()
+    MockVisionHandler.responses.append("图1是输入级，图2是负载级，整体构成电源链路。")
+    img = make_img(200, 100)
+    p1 = tmp_png("ci1.png", img)
+    p2 = tmp_png("ci2.png", img)
+    res = vb.tool_compare_infer({
+        "images": [p1, p2],
+        "items_per_image": {0: [{"type": "box", "label": "输入", "box": [10, 10, 90, 60]}]},
+        "question": "两张图是什么关系？",
+    })
+    check("ci answer", "电源" in res["answer"] and res["images"] == 2, str(res)[:200])
+    req = MockVisionHandler.requests[-1]
+    urls = [b for b in req["messages"][1]["content"] if b.get("type") == "image_url"]
+    check("ci two images sent", len(urls) == 2, str(len(urls)))
+    text = req["messages"][1]["content"][0]["text"]
+    check("ci annot text", "【图1】" in text and "【图2】" in text and "输入" in text, text[:300])
+    check("ci applied", len(res["applied_per_image"]) == 2 and len(res["applied_per_image"][0]) == 1, str(res.get("applied_per_image")))
+
+def test_reason_graph(api_base):
+    import vision_bridge_mcp as vb
+    reset_mock()
+    img = make_img(400, 300, (240, 240, 240))
+    p = tmp_png("rg.png", img)
+    # 1) locate step
+    MockVisionHandler.responses.append(json.dumps({"visual_primitives": [{"id": "v1", "label": "芯片A", "type": "box", "box": [100, 100, 200, 150], "confidence": 0.9}]}))
+    r1 = vb.tool_reason_graph({"image": p, "step": {"type": "locate", "target": "芯片A"}})
+    check("rg locate", len(r1["session"]["primitives"]) == 1 and r1["session"]["primitives"][0]["geometry"] == [100, 100, 200, 150], str(r1))
+    # 2) 再 locate 第二个 + measure
+    MockVisionHandler.responses.append(json.dumps({"visual_primitives": [{"id": "v1", "label": "芯片B", "type": "box", "box": [300, 100, 380, 150], "confidence": 0.9}]}))
+    r2 = vb.tool_reason_graph({"image": p, "session": r1["session"], "step": {"type": "locate", "target": "芯片B"}})
+    check("rg locate2", len(r2["session"]["primitives"]) == 2, str(r2))
+    r3 = vb.tool_reason_graph({"image": p, "session": r2["session"], "step": {"type": "measure", "measure": "distance", "refs": ["p1", "p2"]}})
+    check("rg distance", r3["results"]["distance_px"] == 190.0, str(r3["results"]))
+    r3b = vb.tool_reason_graph({"image": p, "session": r2["session"], "step": {"type": "measure", "measure": "angle", "refs": [[0, 0], [100, 100], [200, 100]]}})
+    check("rg angle", r3b["results"]["angle_deg"] == 135.0, str(r3b["results"]))
+    r3c = vb.tool_reason_graph({"image": p, "session": r2["session"], "step": {"type": "measure", "measure": "area", "refs": [[0, 0], [0, 100], [100, 100], [100, 0]]}})
+    check("rg area", r3c["results"]["area_px2"] == 10000.0, str(r3c["results"]))
+    # 3) semantic + hypothesis
+    r4 = vb.tool_reason_graph({"image": p, "session": r2["session"], "step": {"type": "semantic", "text": "两芯片间距约190px"}})
+    check("rg semantic", len(r4["session"]["semantics"]) == 1, str(r4))
+    r5 = vb.tool_reason_graph({"image": p, "session": r4["session"], "step": {"type": "hypothesis", "text": "A和B通过SPI连接"}})
+    check("rg hypothesis", r5["session"]["hypotheses"][0]["status"] == "proposed", str(r5))
+    # 4) verify（走 annotate_infer mock）
+    reset_mock()
+    MockVisionHandler.responses.append("验证结果：A与B的走线符合SPI信号特征。")
+    r6 = vb.tool_reason_graph({"image": p, "session": r5["session"], "step": {"type": "verify", "id": "h1"}})
+    check("rg verify", "SPI" in r6["results"]["verdict"] and r6["session"]["hypotheses"][0]["status"] == "verified", str(r6)[:300])
+    # 5) next
+    reset_mock()
+    MockVisionHandler.responses.append("下一步建议测量A与B的角度以确认连接方式。")
+    r7 = vb.tool_reason_graph({"image": p, "session": r5["session"], "step": {"type": "next"}})
+    check("rg next", "下一步" in r7["results"]["next_step"], str(r7)[:200])
+    # 6) 校验
+    try:
+        vb.tool_reason_graph({"image": p, "step": {"type": "fly"}})
+        check("rg bad step", False, "should raise")
+    except vb.VisionError as e:
+        check("rg bad step", "不支持的 step" in str(e), str(e))
+
 def test_compare_images(api_base):
     import vision_bridge_mcp as vb
     reset_mock()
@@ -569,6 +631,9 @@ def main():
     test_annotate_infer_v16(api_base)
     print("== annotate_infer ==")
     test_annotate_infer(api_base)
+    print("== compare_infer / reason_graph ==")
+    test_compare_infer(api_base)
+    test_reason_graph(api_base)
     print("== compare_images ==")
     test_compare_images(api_base)
     print("== verdict 解析 ==")

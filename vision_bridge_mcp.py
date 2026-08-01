@@ -1152,6 +1152,260 @@ def tool_annotate_infer(args):
     return out
 
 
+
+
+# ----------------------------- 多图联合推理（compare_infer） -----------------------------
+
+def tool_compare_infer(args):
+    images = args.get("images")
+    if not isinstance(images, list) or not (2 <= len(images) <= 4):
+        raise VisionError("images 必须是 2-4 张图片（本地路径或 http(s) URL）的数组")
+    question = str(args.get("question") or "").strip()
+    if not question:
+        raise VisionError("缺少参数: question（联合推理问题）")
+    mode = str(args.get("mode") or "virtual").lower()
+    if mode not in ("virtual", "overlay"):
+        raise VisionError("mode 必须是 'virtual' 或 'overlay'")
+    try:
+        alpha = float(args.get("alpha") or 0.35)
+    except (TypeError, ValueError):
+        alpha = 0.35
+    if not 0 < alpha <= 1:
+        raise VisionError("alpha 必须在 (0, 1] 之间")
+
+    items_per_image = args.get("items_per_image") or {}
+    if not isinstance(items_per_image, dict):
+        raise VisionError("items_per_image 必须是 {图索引: 标注数组} 对象")
+
+    mimages = []
+    per_desc = []
+    per_applied = []
+    overlay_paths = []
+    for i, src in enumerate(images):
+        img, raw, label = load_image(src)
+        mimg, sx, sy = _fit_model(img)
+        mimages.append(mimg)
+        items = items_per_image.get(i) or []
+        if isinstance(items, dict):
+            items = [items]
+        parsed = []
+        auto_id = 0
+        for it in items:
+            aid, typ, lbl, color, geo = _parse_annot_item(it, img.width, img.height)
+            if not aid:
+                auto_id += 1
+                aid = f"i{i+1}a{auto_id}"
+            parsed.append([aid, typ, lbl, color, _scale_geo(geo, sx, sy)])
+        applied = []
+        for aid2, typ2, lbl2, color2, geo2 in parsed:
+            entry = {"id": aid2, "type": typ2, "color": color2}
+            if lbl2:
+                entry["label"] = lbl2
+            entry.update(geo2)
+            applied.append(entry)
+        per_applied.append(applied)
+        if parsed:
+            desc = "\n".join(_annot_to_text(*p) for p in parsed)
+            per_desc.append(f"【图{i+1}】标注：\n{desc}")
+        else:
+            per_desc.append(f"【图{i+1}】无标注")
+        if mode == "overlay" and parsed:
+            mw, mh = mimg.size
+            overlay = Image.new("RGBA", (mw, mh), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            lw = max(2, min(6, mw // 300))
+            fnt = _font(max(12, mw // 60))
+            for aid2, typ2, lbl2, color2, geo2 in parsed:
+                _draw_annot_overlay(od, aid2, typ2, lbl2, color2, geo2, lw, fnt)
+            if alpha < 1.0:
+                a_layer = overlay.getchannel("A").point(lambda a: round(a * alpha))
+                overlay = overlay.copy()
+                overlay.putalpha(a_layer)
+            composite = Image.alpha_composite(mimg.convert("RGBA"), overlay).convert("RGB")
+            op = _unique_path("compare_infer")
+            composite.save(op, "PNG")
+            overlay_paths.append({"index": i, "path": str(op)})
+            mimages[i] = composite
+
+    key = cache_key(b"|".join([str(len(images)).encode(), question.encode("utf-8"), json.dumps(items_per_image, ensure_ascii=False).encode("utf-8")]), "compare_infer", mode, str(alpha))
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: compare_infer")
+        return hit
+
+    names = "、".join(f"图{i+1}" for i in range(len(images)))
+    prompt = (
+        f"请联合分析以下 {len(images)} 张图像（编号：{names}）。"
+        "先分别理解每张图的内容，再对比/联合推理它们之间的关系（相同点、差异、因果、时序、整体结论）。\n"
+        + "\n".join(per_desc)
+        + f"\n联合推理问题：{question}"
+    )
+    content = [{"type": "text", "text": prompt}]
+    for mimg in mimages:
+        data_url, _ = encode_png(mimg)
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
+    text = call_chat([
+        {"role": "system", "content": AUX_VISION_SYSTEM},
+        {"role": "user", "content": content},
+    ]).strip()
+    out = {
+        "mode": mode,
+        "answer": text,
+        "images": len(images),
+        "applied_per_image": per_applied,
+        "overlay_paths": overlay_paths if overlay_paths else None,
+    }
+    cache_set(key, out)
+    return out
+
+
+# ----------------------------- 交互式图形推理协议（reason_graph） -----------------------------
+
+def _resolve_measure_coords(refs, prims):
+    coords = []
+    for r in refs or []:
+        if isinstance(r, (list, tuple)) and len(r) in (2, 4) and all(isinstance(x, (int, float)) for x in r):
+            coords.append([float(x) for x in r])
+        else:
+            p = next((x for x in prims if x.get("id") == str(r)), None)
+            if p and p.get("geometry"):
+                g = p["geometry"]
+                coords.append([(g[0] + g[2]) / 2.0, (g[1] + g[3]) / 2.0] if len(g) == 4 else [float(g[0]), float(g[1])])
+    return coords
+
+def tool_reason_graph(args):
+    image = args["image"]
+    question = str(args.get("question") or "").strip()
+    session = args.get("session") or {}
+    if not isinstance(session, dict):
+        raise VisionError("session 必须是对象")
+    step = args.get("step") or {}
+    if not isinstance(step, dict):
+        raise VisionError("step 必须是对象")
+    stype = str(step.get("type") or "next").lower()
+    valid = ("locate", "measure", "annotate", "semantic", "hypothesis", "verify", "next")
+    if stype not in valid:
+        raise VisionError(f"不支持的 step 类型: {stype}（支持: {', '.join(valid)}）")
+
+    img, raw, label = load_image(image)
+    prims = session.get("primitives") or []
+    anns = session.get("annotations") or []
+    sem = session.get("semantics") or []
+    hyps = session.get("hypotheses") or []
+    results = {}
+
+    if stype == "locate":
+        target = str(step.get("target") or "").strip() or question
+        if not target:
+            raise VisionError("locate step 需要 target（定位目标）")
+        refine = step.get("refine") in (True, "true", "1", 1)
+        loc = tool_locate_object({"image": image, "target": target, "refine": refine})
+        got = []
+        for i, pr in enumerate(loc.get("primitives", [])):
+            pid = str(step.get("id") or f"p{len(prims) + i + 1}")
+            entry = {
+                "id": pid,
+                "type": "box",
+                "label": target,
+                "geometry": pr.get("box_pixel") or pr.get("box"),
+                "confidence": pr.get("confidence"),
+                "source": "locate",
+            }
+            prims.append(entry)
+            got.append(entry)
+        results["located"] = got
+    elif stype == "measure":
+        mtype = str(step.get("measure") or step.get("metric") or "distance").lower()
+        refs = step.get("refs") or []
+        coords = _resolve_measure_coords(refs, prims)
+        if mtype == "distance":
+            if len(coords) < 2:
+                raise VisionError("distance 需要至少 2 个参考点（坐标或 primitives id）")
+            import math as _m
+            results["distance_px"] = round(_m.dist(coords[0], coords[1]), 1)
+        elif mtype == "angle":
+            if len(coords) < 3:
+                raise VisionError("angle 需要 3 个参考点（以第 2 个为顶点）")
+            import math as _m
+            a, b, c = coords[0], coords[1], coords[2]
+            v1 = (a[0] - b[0], a[1] - b[1])
+            v2 = (c[0] - b[0], c[1] - b[1])
+            den = _m.hypot(*v1) * _m.hypot(*v2)
+            cosv = (v1[0] * v2[0] + v1[1] * v2[1]) / (den or 1.0)
+            results["angle_deg"] = round(_m.degrees(_m.acos(max(-1.0, min(1.0, cosv)))), 1)
+        elif mtype == "area":
+            if not coords:
+                raise VisionError("area 需要参考点或框")
+            p0 = coords[0]
+            if len(p0) == 4:
+                results["area_px2"] = round((p0[2] - p0[0]) * (p0[3] - p0[1]), 1)
+            elif len(coords) >= 3:
+                import math as _m
+                pts = coords
+                area = abs(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))) / 2.0
+                results["area_px2"] = round(area, 1)
+            else:
+                raise VisionError("area 需要至少 3 个点或 1 个框")
+        else:
+            raise VisionError(f"不支持的测量类型: {mtype}（支持 distance/angle/area）")
+        results["measure"] = mtype
+    elif stype == "annotate":
+        items = step.get("items")
+        if items is None:
+            items = []
+            for p in prims:
+                g = p.get("geometry")
+                if g and len(g) == 4:
+                    items.append({"id": p["id"], "type": "box", "label": p.get("label") or p["id"], "box": g})
+                elif g and len(g) == 2:
+                    items.append({"id": p["id"], "type": "point", "label": p.get("label") or p["id"], "point": g})
+        ann = tool_annotate_infer({"image": image, "items": items, "question": question or "确认标注位置", "mode": "overlay", "alpha": 0.4})
+        anns = ann.get("applied") or []
+        results["overlay_path"] = ann.get("overlay_path")
+        results["annotations"] = anns
+    elif stype == "semantic":
+        text = str(step.get("text") or "").strip()
+        if not text:
+            raise VisionError("semantic step 需要 text（语义描述）")
+        sem.append(text)
+        results["semantics"] = list(sem)
+    elif stype == "hypothesis":
+        text = str(step.get("text") or "").strip()
+        if not text:
+            raise VisionError("hypothesis step 需要 text（假设内容）")
+        hid = str(step.get("id") or f"h{len(hyps) + 1}")
+        hyps.append({"id": hid, "text": text, "status": str(step.get("status") or "proposed")})
+        results["hypotheses"] = list(hyps)
+    elif stype == "verify":
+        hid = str(step.get("id") or "")
+        hyp = next((x for x in hyps if x["id"] == hid), None)
+        items = step.get("items")
+        if items is None:
+            items = []
+            for p in prims:
+                g = p.get("geometry")
+                if g and len(g) == 4:
+                    items.append({"id": p["id"], "type": "box", "label": p.get("label") or p["id"], "box": g})
+        q = f"验证推理假设：{hyp['text'] if hyp else '（未指定）'}。{question}"
+        r = tool_annotate_infer({"image": image, "items": items, "question": q, "mode": "virtual"})
+        results["verdict"] = r.get("answer")
+        if hyp:
+            hyp["status"] = "verified"
+            results["hypothesis_status"] = "verified"
+    elif stype == "next":
+        items = []
+        for p in prims:
+            g = p.get("geometry")
+            if g and len(g) == 4:
+                items.append({"id": p["id"], "type": "box", "label": p.get("label") or p["id"], "box": g})
+        q = (f"当前图形推理状态：原语 {len(prims)} 个、语义记录 {len(sem)} 条、假设 {len(hyps)} 条。"
+             f"请基于现状建议下一步最有价值的推理动作（继续定位/测量/验证哪个假设/新假设），并说明理由。{question}")
+        r = tool_annotate_infer({"image": image, "items": items, "question": q, "mode": "virtual"})
+        results["next_step"] = r.get("answer")
+
+    session_out = {"primitives": prims, "annotations": anns, "semantics": sem, "hypotheses": hyps}
+    return {"session": session_out, "step": stype, "results": results}
+
 # ----------------------------- 多图对比（compare_images） -----------------------------
 
 def tool_compare_images(args):
@@ -1432,6 +1686,8 @@ HANDLERS = {
     "scan_anomalies": tool_scan_anomalies,
     "compare_images": tool_compare_images,
     "annotate_infer": tool_annotate_infer,
+    "compare_infer": tool_compare_infer,
+    "reason_graph": tool_reason_graph,
 }
 
 TOOLS = [
@@ -1553,6 +1809,35 @@ TOOLS = [
                 "detail": {"type": "string", "enum": ["brief", "balanced", "detailed"], "description": "细节程度"},
             },
             "required": ["image", "items", "question"],
+        },
+    },
+    {
+        "name": "compare_infer",
+        "description": "多图联合推理（2-4 张）：每张图可带独立标注（items_per_image），联合对比/推理关系（差异、因果、时序、整体结论）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "images": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 4},
+                "items_per_image": {"type": "object", "description": "{图索引(0开始): 标注数组}，每图可选"},
+                "question": {"type": "string", "description": "联合推理问题"},
+                "mode": {"type": "string", "enum": ["virtual", "overlay"], "description": "默认 virtual"},
+                "alpha": {"type": "number", "description": "overlay 透明度，默认 0.35"},
+            },
+            "required": ["images", "question"],
+        },
+    },
+    {
+        "name": "reason_graph",
+        "description": "交互式图形推理协议：原语(locate/measure) → 语义(semantic/hypothesis) → 标注(annotate/verify) 多轮循环。session 跨轮传递状态。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "question": {"type": "string", "description": "总体推理目标（各轮可带）"},
+                "session": {"type": "object", "description": "上一轮返回的 session（primitives/annotations/semantics/hypotheses），第一轮可省略"},
+                "step": {"type": "object", "description": "本轮动作：{type: locate|measure|annotate|semantic|hypothesis|verify|next, ...}（locate: target/refine；measure: measure=distance|angle|area + refs；verify: id；hypothesis/semantic: text）"},
+            },
+            "required": ["image", "step"],
         },
     },
     {
