@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 9 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "scan_anomalies"], str(names))
+        check("tools/list 10 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -381,6 +381,30 @@ def test_scan_anomalies(api_base):
     check("scan box orig", c0["box"] == [100, 100, 200, 160], str(c0["box"]))
 
 
+
+def test_compare_images(api_base):
+    import vision_bridge_mcp as vb
+    reset_mock()
+    MockVisionHandler.responses.append("图1和图2的主要差异：背景色不同，按钮位置不同。")
+    img = make_img(200, 100)
+    p1 = tmp_png("cmp1.png", img)
+    p2 = tmp_png("cmp2.png", img)
+    res = vb.tool_compare_images({"images": [p1, p2], "question": "有什么变化"})
+    check("compare result", "差异" in res and "图1" in res, res)
+    req = MockVisionHandler.requests[-1]
+    check("compare two images", len(req["messages"][1]["content"]) == 3, str(req["messages"][1]["content"][:2]))
+    check("compare prompt", "对比分析" in req["messages"][1]["content"][0]["text"], req["messages"][1]["content"][0]["text"][:80])
+    # 缓存
+    calls = MockVisionHandler.vision_calls
+    res2 = vb.tool_compare_images({"images": [p1, p2], "question": "有什么变化"})
+    check("compare cache", MockVisionHandler.vision_calls == calls and res2 == res, res2)
+    # 参数校验
+    try:
+        vb.tool_compare_images({"images": [p1]})
+        check("compare min images", False, "should raise")
+    except vb.VisionError as e:
+        check("compare min images", "2-4 张" in str(e), str(e))
+
 def test_parse_verdict():
     import vision_bridge_mcp as vb
     v1 = vb._parse_verdict("1) 是\n2) 约30度\n3) 5C\n4) 电阻")
@@ -429,6 +453,8 @@ def main():
     test_prompt_upgrade(api_base)
     test_normalize_rotation(api_base)
     test_scan_anomalies(api_base)
+    print("== compare_images ==")
+    test_compare_images(api_base)
     print("== verdict 解析 ==")
     test_parse_verdict()
     print("== health ==")

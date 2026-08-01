@@ -715,6 +715,49 @@ def tool_vision_health(args=None):
         "output_dir": str(OUTPUT_DIR),
         "max_image_mb": MAX_IMAGE_BYTES // (1024 * 1024),
     }
+
+
+
+
+# ----------------------------- 多图对比（compare_images） -----------------------------
+
+def tool_compare_images(args):
+    images = args.get("images")
+    if not isinstance(images, list) or not (2 <= len(images) <= 4):
+        raise VisionError("images 必须是 2-4 张图片（本地路径或 http(s) URL）的数组")
+    question = str(args.get("question") or "").strip()
+    detail = str(args.get("detail") or "balanced").lower()
+    if detail not in ("brief", "balanced", "detailed"):
+        detail = "balanced"
+    imgs, raws = [], []
+    for src in images:
+        img, raw, label = load_image(src)
+        imgs.append(img)
+        raws.append(raw)
+    key = cache_key(b"|".join(raws), "compare", question, detail)
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: compare")
+        return hit
+    names = "、".join(f"图{i+1}" for i in range(len(imgs)))
+    prompt = (
+        f"请对比分析以下 {len(imgs)} 张图像（编号：{names}）。逐项对比："
+        "1) 整体内容与布局；2) 相同点；3) 差异点（文字、元素、颜色、位置、状态等，尽量具体）；4) 结论/判断。\n"
+    )
+    prompt += {"brief": "简要回答，每项 1-2 句。", "balanced": "每项给出要点即可。", "detailed": "尽可能详细，逐条列出差异。"}[detail]
+    if question:
+        prompt += f"\n用户关注点（重点回答）：{question}"
+    content = [{"type": "text", "text": prompt}]
+    for img in imgs:
+        data_url, _ = encode_png(img)
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
+    text = call_chat([
+        {"role": "system", "content": AUX_VISION_SYSTEM},
+        {"role": "user", "content": content},
+    ]).strip()
+    cache_set(key, text)
+    return text
+
 # ----------------------------- 异常元件扫描（scan_anomalies） -----------------------------
 
 def _build_tiles(region, tile_size, overlap, max_tiles):
@@ -954,6 +997,7 @@ HANDLERS = {
     "zoom_region": tool_zoom_region,
     "vision_health": tool_vision_health,
     "scan_anomalies": tool_scan_anomalies,
+    "compare_images": tool_compare_images,
 }
 
 TOOLS = [
@@ -1057,6 +1101,19 @@ TOOLS = [
         "name": "vision_health",
         "description": "检查视觉后端配置与连通性。",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "compare_images",
+        "description": "多图对比分析（2-4 张）：A/B 截图对比、设计稿一致性、多帧分析，返回逐项对比结果。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "images": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 4, "description": "2-4 张本地图片路径或 http(s) URL"},
+                "question": {"type": "string", "description": "对比重点，如：UI 有什么变化"},
+                "detail": {"type": "string", "enum": ["brief", "balanced", "detailed"], "description": "细节程度，默认 balanced"},
+            },
+            "required": ["images"],
+        },
     },
     {
         "name": "scan_anomalies",
