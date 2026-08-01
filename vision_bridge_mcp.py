@@ -204,6 +204,9 @@ def call_chat(messages, max_tokens=None, retries=1):
     """调用 OpenAI 兼容 chat/completions。返回文本 content。"""
     if not API_KEY:
         raise VisionError("未配置 VISION_API_KEY（视觉后端密钥）")
+    if _env("VISION_NO_SYSTEM", "0") == "1":
+        # 兼容本地小模型（如 minicpm-v-4_5）：system 消息可能导致空响应
+        messages = [m for m in messages if m.get("role") != "system"]
     url = f"{API_BASE}/chat/completions"
     body = {
         "model": MODEL,
@@ -212,6 +215,9 @@ def call_chat(messages, max_tokens=None, retries=1):
         "temperature": 0,
         "stream": False,
     }
+    if _env("VISION_DISABLE_THINKING", "0") == "1":
+        # LM Studio 思考型视觉模型（如 minicpm-v-4_5 / qwen3.5）禁用思考，避免 content 为空
+        body["thinking"] = False
     data = json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
     last = None

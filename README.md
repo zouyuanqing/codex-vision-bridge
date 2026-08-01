@@ -87,6 +87,9 @@ VISION_OUTPUT_DIR = '/path/to/vision-bridge-mcp/generated'
 | `VISION_SAMPLES` | `1` | >1 时 locate/analyze 多次取样，按空间位置聚类取中位数（更稳，但更慢更贵） |
 | `VISION_OUTPUT_DIR` | `generated/` | 生成图片输出目录（out_path 必须在该目录内） |
 | `VISION_DEBUG` | `0` | 设 `1` 输出日志到 stderr |
+| `VISION_DISABLE_THINKING` | `0` | LM Studio 思考型视觉模型（minicpm-v-4_5 等）设 `1` 避免 content 为空 |
+| `VISION_NO_SYSTEM` | `0` | 本地小模型 system 消息可能触发空响应，设 `1` 跳过 system 消息 |
+| `VISION_MAX_MODEL_SIDE` | `2600` | 送模型的图像长边上限（px），调大可提高输入分辨率 |
 
 ## 交互工作流示例
 
@@ -230,3 +233,12 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
 - `PRIMITIVE_PROMPT` 兼容小模型：允许 ```json 代码块包裹输出（修复 qwen3.5-9b 等本地小模型"禁止代码块"指令下输出空响应的问题）
 - `MAX_MODEL_SIDE` 环境变量化（`VISION_MAX_MODEL_SIDE`，默认 2600）——调大可提高输入分辨率（实测对 LM Studio 端到端定位精度无显著帮助，服务端有固定缩放）
 - 本地多后端实测（LM Studio qwen3.5-9b）：describe/OCR 中文优秀（<15s）；**定位精度弱**（按钮误差 210px，粗框偏移导致 refine 失效）——精细定位建议用 grounding 较强的云端模型（MiMo V2.5 refine 后误差 20px）
+
+
+## v1.8.2（2026-08-02）
+
+- 新增本地后端兼容：`VISION_DISABLE_THINKING=1`（思考型模型禁用思考）、`VISION_NO_SYSTEM=1`（跳过 system 消息）
+- LM Studio `minicpm-v-4_5` 推荐配置：`VISION_DISABLE_THINKING=1` + `VISION_NO_SYSTEM=1` + `VISION_MAX_TOKENS=16000` + `VISION_MAX_MODEL_SIDE=4096`
+- 本地模型实测对比（同一 benchmark）：
+  - `qwen3.5-9b`：describe/OCR 优秀（<15s）；**定位不可用**（按钮误差 210px、颜色-位置映射错误）
+  - `minicpm-v-4_5`：describe/OCR 优秀（bbox 准确）；**定位可用**（x 方向精确命中，y 方向系统性偏上 ~90px）；偶发 400（LM Studio peg 格式校验）
