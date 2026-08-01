@@ -57,6 +57,10 @@
 
 ![模型对比矩阵](docs/demo-model-matrix.png)
 
+**定位效果对比**（同一测试图上各模型 locate 输出框叠加，黑虚线为真实位置）：
+
+![定位效果对比矩阵](docs/demo-locate-matrix.png)
+
 ## 安装与配置
 
 ### 1. 在 `~/.codex/config.toml` 追加
