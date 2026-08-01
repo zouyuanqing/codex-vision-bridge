@@ -22,7 +22,7 @@
 | `zoom_region` | 区域放大（scale 1-8） | `image` 必填；`box`、`scale` |
 | `vision_health` | 检查后端配置与连通性 | 无 |
 | `compare_images` | **多图对比**（2-4 张）：A/B 截图对比、设计稿一致性、多帧分析 | `images` 必填（2-4 张）；`question`、`detail` |
-| `annotate_infer` | **虚拟标注 + 图形推理**：框/点/连线/箭头/圆注入视觉模型（原图零修改或半透明叠加），引导空间关系推理 | `image`、`items`、`question` 必填；`mode`(virtual/overlay)、`alpha` |
+| `annotate_infer` | **虚拟标注 + 图形推理**：框/点/连线/箭头/圆/多边形/气泡注入视觉模型（原图零修改或半透明叠加），支持多轮修正与自动框选 | `image`、`question` 必填；`items`/`auto_boxes` 至少其一；`mode`、`alpha`、`corrections` |
 | `scan_anomalies` | **自动异常扫描**：切块定位候选 → 高清逐点验证 → 输出带角度/丝印/置信度的报告 | `image` 必填；`target`、`region`、`verify`、`max_tiles` |
 
 坐标系统：所有工具接受 `coords="pixel"`（默认，MiMo 实测更准）或 `coords="norm"`（0–1000 归一化）；越界坐标自动钳制并返回 `clamped: true`。
@@ -180,3 +180,16 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
   - 支持类型：`box` / `point` / `line` / `arrow` / `circle`，坐标支持 pixel/norm
   - 实测：框 A=提交、框 B=Cancel 识别正确；箭头连线被推理为"操作闭环"布局语义
 - 测试增至 **71 项**（mock，不依赖真实 key）
+
+
+## v1.6（2026-08-02）
+
+- `annotate_infer` 大幅升级：
+  - 新标注类型：**polygon（多边形）**、**bubble（文本气泡标注，带引出线）**
+  - **多轮标注修正 `corrections`**：`add / remove / move(delta|to) / resize / set`，基于已有标注增量修正后推理（`applied` 返回全部标注 id 供下一轮复用）
+  - **自动框选 `auto_boxes`**：内部 `locate_object` 自动框选目标（紫色框），可与手动标注混合
+  - **大图支持**：>2600px 图自动降采样后送模型（标注坐标同步换算，返回坐标仍为原图系）
+  - 200MP PCB 实测：虚拟标注 A1142C（歪斜 LDO）+ SL2.1S HUB + 供电箭头 → 模型正确推理供电链路（TD1583→LDO→HUB VCC）与歪斜焊点/散热/引脚三大可靠性风险
+  - mermaid 复杂连线图实测：自动框选 4 节点 + 两轮交互式推理（SW 节点、Vout→LDO、反馈分压）
+- 修复：`load_image` 内置支持超大图（200MP），`items` 与 `auto_boxes` 可二选一
+- 测试增至 **85 项**（mock，不依赖真实 key）

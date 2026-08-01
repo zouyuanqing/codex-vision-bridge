@@ -383,6 +383,60 @@ def test_scan_anomalies(api_base):
 
 
 
+
+def test_annotate_infer_v16(api_base):
+    import vision_bridge_mcp as vb
+    from PIL import Image
+    reset_mock()
+    MockVisionHandler.responses.append("ok")
+    img = make_img(300, 200, (230, 230, 230))
+    p = tmp_png("v16.png", img)
+    # polygon / bubble 解析与文本
+    aid, typ, lbl, color, geo = vb._parse_annot_item({"type": "polygon", "points": [[10, 10], [50, 10], [30, 60]]}, 300, 200)
+    check("v16 polygon parse", typ == "polygon" and len(geo["points"]) == 3, str(geo))
+    txt = vb._annot_to_text(aid, typ, "P1", color, geo)
+    check("v16 polygon text", "多边形" in txt and "(10,10)" in txt, txt)
+    aid, typ, lbl, color, geo = vb._parse_annot_item({"type": "bubble", "point": [100, 100], "text": "这是按钮", "direction": "up"}, 300, 200)
+    check("v16 bubble parse", typ == "bubble" and geo["text"] == "这是按钮", str(geo))
+    txt = vb._annot_to_text(aid, typ, "", color, geo)
+    check("v16 bubble text", "气泡标注" in txt and "这是按钮" in txt, txt)
+    # overlay 绘制 polygon + bubble + applied 返回
+    reset_mock()
+    MockVisionHandler.responses.append("ok2")
+    items = [
+        {"type": "polygon", "label": "P1", "points": [[20, 20], [120, 20], [70, 100]]},
+        {"type": "bubble", "text": "目标区", "point": [250, 50], "direction": "auto"},
+    ]
+    res = vb.tool_annotate_infer({"image": p, "items": items, "question": "多边形与气泡指的区域是什么？", "mode": "overlay", "alpha": 0.5})
+    check("v16 applied count", len(res["applied"]) == 2, str(res.get("applied")))
+    check("v16 auto ids", res["applied"][0]["id"] == "a1" and res["applied"][1]["id"] == "a2", str(res.get("applied")))
+    check("v16 overlay file", os.path.exists(res["overlay_path"]))
+    ov = Image.open(res["overlay_path"]).convert("RGB")
+    check("v16 polygon drawn", ov.getpixel((25, 25)) != (230, 230, 230), "polygon 未绘制")
+    # corrections: move/add
+    reset_mock()
+    MockVisionHandler.responses.append("修正后 ok")
+    items2 = [{"id": "b1", "type": "box", "box": [10, 10, 90, 60]}]
+    corr = [
+        {"op": "move", "id": "b1", "delta": [20, 30]},
+        {"op": "add", "item": {"type": "point", "label": "新点", "point": [200, 100]}},
+    ]
+    res2 = vb.tool_annotate_infer({"image": p, "items": items2, "corrections": corr, "question": "修正后是什么"})
+    check("v16 corrections flag", res2["corrections_applied"] is True, str(res2))
+    b1 = next((a for a in res2["applied"] if a["id"] == "b1"), None)
+    check("v16 move box", b1 is not None and b1["box"] == [30, 40, 110, 90], str(b1))
+    check("v16 add item", any(a.get("label") == "新点" for a in res2["applied"]), str(res2.get("applied")))
+    # corrections: remove
+    res3 = vb.tool_annotate_infer({"image": p, "items": items2, "corrections": [{"op": "remove", "id": "b1"}], "question": "删掉后"})
+    check("v16 remove", res3["applied"] == [], str(res3.get("applied")))
+    # auto_boxes
+    reset_mock()
+    MockVisionHandler.responses.append(json.dumps({"visual_primitives": [{"id": "v1", "label": "按钮", "type": "box", "box": [50, 50, 150, 100], "confidence": 0.9}]}))
+    MockVisionHandler.responses.append("自动框选 ok")
+    res4 = vb.tool_annotate_infer({"image": p, "items": [{"type": "point", "point": [10, 10]}], "auto_boxes": ["按钮"], "question": "自动框了什么"})
+    check("v16 auto_boxes", res4["auto_boxes_applied"] is not None and res4["auto_boxes_applied"][0]["box"] == [50, 50, 150, 100], str(res4.get("auto_boxes_applied")))
+    check("v16 auto in applied", any(a.get("label") == "按钮" for a in res4["applied"]), str(res4.get("applied")))
+
 def test_annotate_infer(api_base):
     import vision_bridge_mcp as vb
     from PIL import Image
@@ -418,7 +472,7 @@ def test_annotate_infer(api_base):
     except vb.VisionError as e:
         check("ai missing question", "question" in str(e), str(e))
     try:
-        vb.tool_annotate_infer({"image": p, "items": [{"type": "polygon", "box": [0, 0, 10, 10]}], "question": "x"})
+        vb.tool_annotate_infer({"image": p, "items": [{"type": "hexagon", "points": [[0, 0], [1, 1]]}], "question": "x"})
         check("ai bad type", False, "should raise")
     except vb.VisionError as e:
         check("ai bad type", "不支持的标注类型" in str(e), str(e))
@@ -494,6 +548,8 @@ def main():
     test_prompt_upgrade(api_base)
     test_normalize_rotation(api_base)
     test_scan_anomalies(api_base)
+    print("== annotate_infer v1.6 ==")
+    test_annotate_infer_v16(api_base)
     print("== annotate_infer ==")
     test_annotate_infer(api_base)
     print("== compare_images ==")

@@ -113,6 +113,8 @@ def load_image(src):
         data = p.read_bytes()
         label = str(p.resolve())
     try:
+        # 支持超大图（如 200MP PCB 照片）；大小保护由 MAX_IMAGE_BYTES 负责
+        Image.MAX_IMAGE_PIXELS = None
         img = Image.open(io.BytesIO(data))
         img.load()
     except Exception as e:
@@ -723,17 +725,18 @@ def tool_vision_health(args=None):
 
 # ----------------------------- 虚拟标注推理（annotate_infer） -----------------------------
 
-ANNOT_TYPES = ("box", "point", "line", "arrow", "circle")
+ANNOT_TYPES = ("box", "point", "line", "arrow", "circle", "polygon", "bubble")
 
 def _parse_annot_item(item, w, h):
-    """解析标注项 -> (type, label, color, geometry_pixel)。geometry_pixel: dict。"""
+    """解析标注项 -> (id, type, label, color, geometry_pixel)。"""
     if not isinstance(item, dict):
         raise VisionError("标注项必须是对象")
     typ = str(item.get("type") or "box").lower()
     if typ not in ANNOT_TYPES:
         raise VisionError(f"不支持的标注类型: {typ}（支持: {', '.join(ANNOT_TYPES)}）")
-    label = str(item.get("label") or item.get("id") or "").strip()
+    label = str(item.get("label") or "").strip()
     color = str(item.get("color") or "#ff3b30")
+    aid = str(item.get("id") or "").strip()
     coords = str(item.get("coords") or "pixel").lower()
     if coords not in ("pixel", "norm"):
         raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords!r}")
@@ -742,37 +745,49 @@ def _parse_annot_item(item, w, h):
         if not isinstance(v, (list, tuple)) or len(v) != n:
             raise VisionError(f"标注几何长度应为 {n}: {v!r}")
         if coords == "norm":
-            return [round(float(v[0]) * w / 1000), round(float(v[1]) * h / 1000)] if n == 2 else                    [round(float(v[0]) * w / 1000), round(float(v[1]) * h / 1000),
-                    round(float(v[2]) * w / 1000), round(float(v[3]) * h / 1000)]
+            return [round(float(v[i]) * (w / 1000.0 if i % 2 == 0 else h / 1000.0)) for i in range(n)]
         return [round(float(x)) for x in v]
 
     if typ == "box":
-        box = px(item.get("box"), 4)
-        box, _ = _clamp_list(box, w, h)
-        return typ, label, color, {"box": box}
+        box, _ = _clamp_list(px(item.get("box"), 4), w, h)
+        return aid, typ, label, color, {"box": box}
     if typ == "point":
-        pt = px(item.get("point"), 2)
-        pt, _ = _clamp_list(pt, w, h)
-        return typ, label, color, {"point": pt}
+        pt, _ = _clamp_list(px(item.get("point"), 2), w, h)
+        return aid, typ, label, color, {"point": pt}
     if typ in ("line", "arrow"):
-        frm = px(item.get("from"), 2)
-        to = px(item.get("to"), 2)
-        frm, _ = _clamp_list(frm, w, h)
-        to, _ = _clamp_list(to, w, h)
-        return typ, label, color, {"from": frm, "to": to}
+        frm, _ = _clamp_list(px(item.get("from"), 2), w, h)
+        to, _ = _clamp_list(px(item.get("to"), 2), w, h)
+        return aid, typ, label, color, {"from": frm, "to": to}
     if typ == "circle":
-        c = px(item.get("center"), 2)
-        c, _ = _clamp_list(c, w, h)
+        c, _ = _clamp_list(px(item.get("center"), 2), w, h)
         try:
             r = int(item.get("radius") or 20)
         except (TypeError, ValueError):
             r = 20
         r = max(1, min(r, w, h))
-        return typ, label, color, {"center": c, "radius": r}
+        return aid, typ, label, color, {"center": c, "radius": r}
+    if typ == "polygon":
+        pts = item.get("points")
+        if not isinstance(pts, list) or len(pts) < 3:
+            raise VisionError("polygon 需要 points（至少 3 个 [x,y] 点）")
+        poly = []
+        for p in pts:
+            pp, _ = _clamp_list(px(p, 2), w, h)
+            poly.append(pp)
+        return aid, typ, label, color, {"points": poly}
+    if typ == "bubble":
+        pt, _ = _clamp_list(px(item.get("point"), 2), w, h)
+        text = str(item.get("text") or label or "").strip()
+        if not text:
+            raise VisionError("bubble 需要 text（气泡文字）或 label")
+        direction = str(item.get("direction") or "auto").lower()
+        if direction not in ("auto", "up", "down", "left", "right"):
+            raise VisionError(f"bubble direction 必须是 auto/up/down/left/right，收到: {direction}")
+        return aid, typ, label, color, {"point": pt, "text": text, "direction": direction}
     raise VisionError(f"未实现的标注类型: {typ}")
 
-def _annot_to_text(typ, label, color, geo):
-    name = label or {"box": "框", "point": "点", "line": "连线", "arrow": "箭头连线", "circle": "圆"}[typ]
+def _annot_to_text(aid, typ, label, color, geo):
+    name = label or aid or {"box": "框", "point": "点", "line": "连线", "arrow": "箭头连线", "circle": "圆", "polygon": "多边形", "bubble": "气泡标注"}[typ]
     if typ == "box":
         b = geo["box"]
         return f"{name}：框 [({b[0]},{b[1]}) -> ({b[2]},{b[3]})]（左上到右下，像素坐标）"
@@ -785,16 +800,25 @@ def _annot_to_text(typ, label, color, geo):
     if typ == "circle":
         c, r = geo["center"], geo["radius"]
         return f"{name}：圆 圆心 ({c[0]},{c[1]}) 半径 {r}px"
+    if typ == "polygon":
+        pts = ", ".join(f"({x},{y})" for x, y in geo["points"])
+        return f"{name}：多边形 顶点 {pts}"
+    if typ == "bubble":
+        p = geo["point"]
+        return f"{name}：气泡标注 文字「{geo['text']}」 指向点 ({p[0]},{p[1]})"
     return ""
 
-def _draw_annot_overlay(draw, typ, label, color, geo, lw, fnt):
+def _draw_annot_overlay(draw, aid, typ, label, color, geo, lw, fnt):
+    img_w, img_h = draw._image.size
     if typ == "box":
         b = geo["box"]
         draw.rectangle(b, outline=color, width=lw, fill=color + "33")
-        if label:
-            tb = draw.textbbox((0, 0), label, font=fnt)
-            draw.rectangle([b[0], max(0, b[1] - (tb[3] - tb[1]) - 6), b[0] + (tb[2] - tb[0]) + 8, b[1]], fill=color)
-            draw.text((b[0] + 4, max(0, b[1] - (tb[3] - tb[1]) - 4)), label, fill="white", font=fnt)
+        txt = label or aid
+        if txt:
+            tb = draw.textbbox((0, 0), txt, font=fnt)
+            th = tb[3] - tb[1]
+            draw.rectangle([b[0], max(0, b[1] - th - 6), b[0] + (tb[2] - tb[0]) + 8, b[1]], fill=color)
+            draw.text((b[0] + 4, max(0, b[1] - th - 4)), txt, fill="white", font=fnt)
     elif typ == "point":
         p = geo["point"]
         r = max(6, lw + 3)
@@ -811,14 +835,82 @@ def _draw_annot_overlay(draw, typ, label, color, geo, lw, fnt):
     elif typ == "circle":
         c, r = geo["center"], geo["radius"]
         draw.ellipse([c[0] - r, c[1] - r, c[0] + r, c[1] + r], outline=color, width=lw, fill=color + "22")
+    elif typ == "polygon":
+        pts = geo["points"]
+        draw.polygon(pts, outline=color, fill=color + "33")
+        draw.line(pts + [pts[0]], fill=color, width=lw)
+        txt = label or aid
+        if txt:
+            cx = sum(p[0] for p in pts) // len(pts)
+            cy = sum(p[1] for p in pts) // len(pts)
+            tb = draw.textbbox((0, 0), txt, font=fnt)
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            draw.rectangle([cx, max(0, cy - th - 4), cx + tw + 8, cy + 2], fill=color)
+            draw.text((cx + 4, max(0, cy - th - 2)), txt, fill="white", font=fnt)
+    elif typ == "bubble":
+        p = geo["point"]
+        txt = geo["text"]
+        direction = geo["direction"]
+        tb = draw.textbbox((0, 0), txt, font=fnt)
+        tw, th = tb[2] - tb[0], tb[3] - tb[1]
+        pad = 6
+        if direction == "auto":
+            direction = "right" if p[0] < img_w * 0.5 else "left"
+        if direction == "up":
+            rect = [p[0] - tw // 2 - pad, max(0, p[1] - th - 2 * pad - 10), p[0] + tw // 2 + pad, p[1] - 10]
+            tail = [(p[0], p[1] - 10), (p[0] - 6, p[1]), (p[0] + 6, p[1])]
+        elif direction == "down":
+            rect = [p[0] - tw // 2 - pad, p[1] + 10, min(img_w, p[0] + tw // 2 + pad), p[1] + th + 2 * pad + 10]
+            tail = [(p[0], p[1] + 10), (p[0] - 6, p[1]), (p[0] + 6, p[1])]
+        elif direction == "left":
+            rect = [max(0, p[0] - tw - 2 * pad - 10), p[1] - th // 2 - pad, p[0] - 10, p[1] + th // 2 + pad]
+            tail = [(p[0] - 10, p[1]), (p[0], p[1] - 6), (p[0], p[1] + 6)]
+        else:
+            rect = [p[0] + 10, p[1] - th // 2 - pad, min(img_w, p[0] + tw + 2 * pad + 10), p[1] + th // 2 + pad]
+            tail = [(p[0] + 10, p[1]), (p[0], p[1] - 6), (p[0], p[1] + 6)]
+        draw.rounded_rectangle(rect, radius=8, fill="white", outline=color, width=2)
+        draw.polygon(tail, fill="white", outline=color)
+        draw.line([p, tail[0]], fill=color, width=2)
+        tx = rect[0] + pad
+        ty = rect[1] + max(0, (rect[3] - rect[1] - th) // 2)
+        draw.text((tx, ty), txt, fill="#111111", font=fnt)
+
+MAX_MODEL_SIDE = 2600
+
+def _fit_model(img):
+    """大图降采样到视觉模型友好的尺寸。返回 (模型图, scale_x, scale_y)。"""
+    w, h = img.size
+    m = max(w, h)
+    if m <= MAX_MODEL_SIDE:
+        return img, 1.0, 1.0
+    s = MAX_MODEL_SIDE / m
+    nw, nh = max(1, round(w * s)), max(1, round(h * s))
+    return img.resize((nw, nh), Image.LANCZOS), w / nw, h / nh
+
+def _scale_geo(geo, sx, sy):
+    """把原图坐标几何换算到模型图坐标。"""
+    ngeo = {}
+    for k, v in geo.items():
+        if k == "points":
+            ngeo[k] = [[round(x / sx), round(y / sy)] for x, y in v]
+        elif k in ("box", "from", "to", "center", "point") and isinstance(v, list) and len(v) in (2, 4) and all(isinstance(x, (int, float)) for x in v):
+            ngeo[k] = [round(v[0] / sx), round(v[1] / sy)] if len(v) == 2 else [round(v[0] / sx), round(v[1] / sy), round(v[2] / sx), round(v[3] / sy)]
+        elif k == "radius":
+            ngeo[k] = max(1, round(v / min(sx, sy)))
+        else:
+            ngeo[k] = v
+    return ngeo
 
 def tool_annotate_infer(args):
     src = args["image"]
     items = args.get("items")
     if isinstance(items, dict):
         items = [items]
-    if not isinstance(items, list) or not items:
+    if not isinstance(items, list):
         raise VisionError("items 必须是标注数组（或单个对象）")
+    auto_boxes_arg = args.get("auto_boxes")
+    if not items and not auto_boxes_arg:
+        raise VisionError("items 或 auto_boxes 至少提供一个")
     question = str(args.get("question") or "").strip()
     if not question:
         raise VisionError("缺少参数: question（推理问题）")
@@ -834,10 +926,124 @@ def tool_annotate_infer(args):
 
     img, raw, label = load_image(src)
     w, h = img.size
-    parsed = [_parse_annot_item(it, w, h) for it in items]
-    descs = [_annot_to_text(*p) for p in parsed]
-    annot_text = "\n".join(descs)
 
+    # ---- 基准标注（含 id 分配） ----
+    parsed = []
+    auto_id = 0
+    for it in items:
+        aid, typ, lbl, color, geo = _parse_annot_item(it, w, h)
+        if not aid:
+            auto_id += 1
+            aid = f"a{auto_id}"
+        parsed.append([aid, typ, lbl, color, geo])
+
+    # ---- 多轮修正 corrections ----
+    corrections = args.get("corrections")
+    if corrections is not None:
+        if not isinstance(corrections, list):
+            raise VisionError("corrections 必须是操作数组")
+        for op in corrections:
+            if not isinstance(op, dict):
+                raise VisionError("corrections 每项必须是对象")
+            opn = str(op.get("op") or "").lower()
+            oid = str(op.get("id") or "")
+            if opn == "add":
+                it = op.get("item")
+                if not isinstance(it, dict):
+                    raise VisionError("corrections add 需要 item")
+                aid2, typ2, lbl2, color2, geo2 = _parse_annot_item(it, w, h)
+                if not aid2:
+                    auto_id += 1
+                    aid2 = f"a{auto_id}"
+                parsed.append([aid2, typ2, lbl2, color2, geo2])
+            elif opn == "remove":
+                parsed = [p for p in parsed if p[0] != oid]
+            elif opn in ("move", "resize", "set"):
+                hit = None
+                for i, p in enumerate(parsed):
+                    if p[0] == oid:
+                        hit = i
+                        break
+                if hit is None:
+                    raise VisionError(f"corrections 引用的标注不存在: {oid}")
+                aid2, typ2, lbl2, color2, geo2 = parsed[hit]
+                if opn == "move":
+                    delta = op.get("delta")
+                    to = op.get("to")
+                    ngeo = dict(geo2)
+                    if isinstance(delta, (list, tuple)) and len(delta) == 2:
+                        dx, dy = int(delta[0]), int(delta[1])
+                        for k, v in ngeo.items():
+                            if k == "points" and isinstance(v, list):
+                                ngeo[k] = [[p[0] + dx, p[1] + dy] for p in v]
+                            elif isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v):
+                                ngeo[k] = [v[0] + dx, v[1] + dy]
+                            elif isinstance(v, list) and len(v) == 4 and all(isinstance(x, (int, float)) for x in v):
+                                ngeo[k] = [v[0] + dx, v[1] + dy, v[2] + dx, v[3] + dy]
+                    elif isinstance(to, (list, tuple)) and len(to) == 2:
+                        t = [int(to[0]), int(to[1])]
+                        if "point" in ngeo:
+                            ngeo["point"] = t
+                        elif "box" in ngeo:
+                            dw = (ngeo["box"][2] - ngeo["box"][0]) // 2
+                            dh = (ngeo["box"][3] - ngeo["box"][1]) // 2
+                            ngeo["box"] = [t[0] - dw, t[1] - dh, t[0] + dw, t[1] + dh]
+                        elif "from" in ngeo and "to" in ngeo:
+                            dw = (ngeo["to"][0] - ngeo["from"][0]) // 2
+                            dh = (ngeo["to"][1] - ngeo["from"][1]) // 2
+                            ngeo["from"] = [t[0] - dw, t[1] - dh]
+                            ngeo["to"] = [t[0] + dw, t[1] + dh]
+                        elif "center" in ngeo:
+                            ngeo["center"] = t
+                        elif "points" in ngeo:
+                            cx = sum(p[0] for p in ngeo["points"]) // len(ngeo["points"])
+                            cy = sum(p[1] for p in ngeo["points"]) // len(ngeo["points"])
+                            dw, dh = t[0] - cx, t[1] - cy
+                            ngeo["points"] = [[p[0] + dw, p[1] + dh] for p in ngeo["points"]]
+                    else:
+                        raise VisionError("corrections move 需要 delta [dx,dy] 或 to [x,y]")
+                    re_item = {"type": typ2, "label": lbl2, "color": color2}
+                    re_item.update(ngeo)
+                    aid3, typ3, lbl3, color3, geo3 = _parse_annot_item(re_item, w, h)
+                    parsed[hit] = [aid2, typ3, lbl3, color3, geo3]
+                else:
+                    patch = {k: v for k, v in op.items() if k in ("box", "point", "from", "to", "center", "points", "radius", "text", "direction")}
+                    if not patch:
+                        raise VisionError("corrections resize/set 需要提供几何字段（box/point/from/to/center/points/radius/text/direction）")
+                    re_item = {"type": typ2, "label": lbl2, "color": color2}
+                    re_item.update(patch)
+                    aid3, typ3, lbl3, color3, geo3 = _parse_annot_item(re_item, w, h)
+                    parsed[hit] = [aid2, typ3, lbl3, color3, geo3]
+            else:
+                raise VisionError(f"不支持的修正操作: {opn}（支持 add/remove/move/resize/set）")
+
+    # ---- 自动框选 auto_boxes ----
+    auto_boxes = args.get("auto_boxes")
+    auto_applied = []
+    if auto_boxes:
+        if isinstance(auto_boxes, str):
+            auto_boxes = [auto_boxes]
+        if not isinstance(auto_boxes, list):
+            raise VisionError("auto_boxes 必须是字符串或数组")
+        for tgt in auto_boxes:
+            tgt = str(tgt).strip()
+            if not tgt:
+                continue
+            loc = tool_locate_object({"image": src, "target": tgt})
+            for pr in loc.get("primitives", []):
+                if pr.get("box"):
+                    auto_id += 1
+                    aid2 = f"auto{auto_id}"
+                    parsed.append([aid2, "box", tgt, "#9b59b6", {"box": pr["box"]}])
+                    auto_applied.append({"id": aid2, "target": tgt, "box": pr["box"]})
+
+    # ---- 模型图（大图降采样）与标注描述 ----
+    mimg, sx, sy = _fit_model(img)
+    parsed_model = []
+    for aid2, typ2, lbl2, color2, geo2 in parsed:
+        parsed_model.append([aid2, typ2, lbl2, color2, _scale_geo(geo2, sx, sy)])
+    descs = [_annot_to_text(*p) for p in parsed_model]
+    annot_text = "\n".join(descs)
     key = cache_key(raw, "annotate_infer", mode, question, annot_text, str(alpha))
     hit = cache_get(key)
     if hit is not None:
@@ -850,34 +1056,44 @@ def tool_annotate_infer(args):
         + annot_text + f"\n推理问题：{question}\n请结合图像内容与标注关系给出分析。"
     )
 
+    applied = []
+    for aid2, typ2, lbl2, color2, geo2 in parsed:
+        entry = {"id": aid2, "type": typ2, "color": color2}
+        if lbl2:
+            entry["label"] = lbl2
+        entry.update(geo2)
+        applied.append(entry)
+
     if mode == "virtual":
         text = call_chat([
             {"role": "system", "content": AUX_VISION_SYSTEM},
-            image_message(base_prompt, img),
+            image_message(base_prompt, mimg),
         ]).strip()
-        out = {"mode": "virtual", "answer": text, "annotations": len(items)}
+        out = {
+            "mode": "virtual",
+            "answer": text,
+            "annotations": len(parsed),
+            "applied": applied,
+            "auto_boxes_applied": auto_applied if auto_applied else None,
+            "corrections_applied": bool(corrections),
+            "model_image_size": [mimg.width, mimg.height],
+        }
     else:
-        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        mw, mh = mimg.size
+        overlay = Image.new("RGBA", (mw, mh), (0, 0, 0, 0))
         od = ImageDraw.Draw(overlay)
-        lw = max(2, min(6, w // 300))
-        fnt = _font(max(12, w // 60))
-        for typ, lbl, color, geo in parsed:
-            _draw_annot_overlay(od, typ, lbl, color, geo, lw, fnt)
-        overlay = overlay.point(lambda px: px)  # no-op 保持类型
-        import math  # noqa: F401
-        alpha_img = overlay
-        # 应用 alpha 缩放（通过色值强度近似：填充色已带 alpha hex，这里控制整体）
+        lw = max(2, min(6, mw // 300))
+        fnt = _font(max(12, mw // 60))
+        for aid2, typ2, lbl2, color2, geo2 in parsed_model:
+            _draw_annot_overlay(od, aid2, typ2, lbl2, color2, geo2, lw, fnt)
         if alpha < 1.0:
-            a_layer = alpha_img.getchannel("A").point(lambda a: round(a * alpha))
-            alpha_img = alpha_img.copy()
-            alpha_img.putalpha(a_layer)
-        composite = Image.alpha_composite(img.convert("RGBA"), alpha_img).convert("RGB")
+            a_layer = overlay.getchannel("A").point(lambda a: round(a * alpha))
+            overlay = overlay.copy()
+            overlay.putalpha(a_layer)
+        composite = Image.alpha_composite(mimg.convert("RGBA"), overlay).convert("RGB")
         out_path = _unique_path("annotate_infer")
         composite.save(out_path, "PNG")
-        prompt = (
-            "这张图像上已叠加半透明标注层（框/点/线/圆，叠加不会遮挡原图内容）。"
-            + base_prompt
-        )
+        prompt = "这张图像上已叠加半透明标注层（框/点/线/圆/多边形/气泡，叠加不会遮挡原图内容）。" + base_prompt
         text = call_chat([
             {"role": "system", "content": AUX_VISION_SYSTEM},
             image_message(prompt, composite),
@@ -885,12 +1101,17 @@ def tool_annotate_infer(args):
         out = {
             "mode": "overlay",
             "answer": text,
-            "annotations": len(items),
+            "annotations": len(parsed),
             "overlay_path": str(out_path),
             "alpha": alpha,
+            "applied": applied,
+            "auto_boxes_applied": auto_applied if auto_applied else None,
+            "corrections_applied": bool(corrections),
+            "model_image_size": [mw, mh],
         }
     cache_set(key, out)
     return out
+
 
 # ----------------------------- 多图对比（compare_images） -----------------------------
 
@@ -1283,7 +1504,9 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "image": {"type": "string"},
-                "items": {"description": "标注数组或单个对象：[{type: box|point|line|arrow|circle, label, color, coords, box/point/from/to/center/radius}]"},
+                "items": {"description": "标注数组或单个对象：[{id?, type: box|point|line|arrow|circle|polygon|bubble, label, color, coords, box/point/from/to/center/radius/points/text/direction}]"},
+                "corrections": {"description": "多轮修正操作数组：[{op: add|remove|move|resize|set, id, delta/to/box/point/...}]，基于 items 修正后推理"},
+                "auto_boxes": {"description": "自动框选：字符串或目标数组（如 '所有按钮'），内部 locate 后生成紫色框参与推理"},
                 "question": {"type": "string", "description": "推理问题，如：框A中的元件是什么？A到B的连线代表什么连接关系？"},
                 "mode": {"type": "string", "enum": ["virtual", "overlay"], "description": "virtual=坐标文本注入（默认，原图零修改）；overlay=半透明叠加图"},
                 "alpha": {"type": "number", "description": "overlay 模式叠加透明度 (0,1]，默认 0.35"},
