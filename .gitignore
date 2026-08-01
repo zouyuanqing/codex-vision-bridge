@@ -1,0 +1,13 @@
+# 本地缓存与产物
+.cache/
+generated/
+__pycache__/
+*.pyc
+
+# 环境变量（含真实 API key）
+.env
+
+# 本地场景脚本
+test/pcb_scan.py
+test/pcb_verify.py
+test/scan2.py
