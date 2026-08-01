@@ -220,6 +220,22 @@ def test_analyze_primitives(api_base):
     check("analyze box norm", prims[0]["box_norm"] == [100, 100, 900, 900], str(prims[0]))
     check("analyze clamp", prims[1]["box_pixel"] == [200, 0, 200, 100] and prims[1]["clamped"] is True, str(prims[1]))
 
+
+def test_locate_refine(api_base):
+    import vision_bridge_mcp as vb
+    reset_mock()
+    img = make_img(400, 300, (240, 240, 240))
+    p = tmp_png("refine.png", img)
+    coarse = json.dumps({"visual_primitives": [{"id": "v1", "label": "目标", "type": "box", "box": [100, 100, 200, 150], "confidence": 0.9}]})
+    fine = json.dumps({"visual_primitives": [{"id": "v1", "label": "目标", "type": "box", "box": [40, 20, 120, 60], "confidence": 0.95}]})
+    MockVisionHandler.responses.append(coarse)
+    MockVisionHandler.responses.append(fine)
+    res = vb.tool_locate_object({"image": p, "target": "目标", "refine": True})
+    pr = res["primitives"][0]
+    check("refine flag", pr.get("refined") is True, str(pr))
+    check("refine box converted", pr["box_pixel"] == [100, 90, 140, 110], str(pr))
+    check("refine two calls", MockVisionHandler.vision_calls == 2, str(MockVisionHandler.vision_calls))
+
 def test_locate_coords(api_base):
     import vision_bridge_mcp as vb
     img = make_img(200, 100)
@@ -533,6 +549,7 @@ def main():
     print("== analyze/locate/ocr ==")
     test_analyze_primitives(api_base)
     test_locate_coords(api_base)
+    test_locate_refine(api_base)
     test_ocr(api_base)
     print("== PIL 图像操作 ==")
     test_annotate(api_base)

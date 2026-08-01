@@ -469,7 +469,8 @@ def tool_locate_object(args):
     coords = str(args.get("coords") or "pixel").lower()
     if coords not in ("pixel", "norm"):
         raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
-    key = cache_key(raw, "locate", target, coords)
+    refine = args.get("refine") in (True, "true", "1", 1)
+    key = cache_key(raw, "locate", target, coords, "refine" if refine else "")
     hit = cache_get(key)
     if hit is not None:
         log("cache hit: locate")
@@ -484,6 +485,44 @@ def tool_locate_object(args):
         obj = extract_json(text)
         batches.append(normalize_primitives(obj.get("visual_primitives"), img.width, img.height, "generic"))
     prims = median_primitives(batches) if SAMPLES > 1 else batches[0]
+    if refine and prims:
+        # 两阶段精修：粗框 -> 裁切放大 -> 二次定位 -> 换算回原图
+        tmp_dir = CACHE_DIR / "scan_tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        refined = []
+        for p in prims:
+            if not p.get("box_pixel"):
+                refined.append(p)
+                continue
+            b = p["box_pixel"]
+            pad = max(20, int(min(b[2] - b[0], b[3] - b[1]) * 0.35))
+            cb = (max(0, b[0] - pad), max(0, b[1] - pad), min(img.width, b[2] + pad), min(img.height, b[3] + pad))
+            if cb[2] - cb[0] < 40 or cb[3] - cb[1] < 40:
+                refined.append(p)
+                continue
+            crop = img.crop(cb)
+            crop2 = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+            tp = tmp_dir / f"refine_{os.getpid()}_{len(refined)}.png"
+            crop2.save(tp, "PNG")
+            try:
+                loc2 = tool_locate_object({"image": str(tp), "target": target, "coords": "pixel"})
+            finally:
+                try:
+                    tp.unlink()
+                except OSError:
+                    pass
+            if loc2.get("primitives") and loc2["primitives"][0].get("box"):
+                bx = loc2["primitives"][0]["box"]
+                # 换算回原图坐标（裁切图被 2x 放大）
+                rb = [cb[0] + bx[0] // 2, cb[1] + bx[1] // 2, cb[0] + bx[2] // 2, cb[1] + bx[3] // 2]
+                rb, _ = _clamp_list(rb, img.width, img.height)
+                if rb[2] - rb[0] >= 2 and rb[3] - rb[1] >= 2:
+                    p = dict(p)
+                    p["box_pixel"] = rb
+                    p["box_norm"] = to_norm(rb, img.width, img.height)
+                    p["refined"] = True
+            refined.append(p)
+        prims = refined
     for p in prims:
         if coords == "norm":
             p["box"] = p.get("box_norm")
@@ -1431,6 +1470,7 @@ TOOLS = [
                 "image": {"type": "string"},
                 "target": {"type": "string", "description": "要定位的目标，如：蓝色提交按钮 / 红色圆形 / 报错文字"},
                 "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认，像素）或 norm（0-1000 归一化）"},
+                "refine": {"type": "boolean", "description": "两阶段精修：粗定位后裁切放大二次定位（更准，代价是每个候选多一次视觉调用），默认 false"},
             },
             "required": ["image", "target"],
         },

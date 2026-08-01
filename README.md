@@ -15,7 +15,7 @@
 |---|---|---|
 | `describe_image` | 文字描述图片 | `image` 必填；`question`、`detail`(brief/balanced/detailed) |
 | `analyze_image` | 结构化分析：描述 + visual_primitives（box/point+标签+置信度） | `image` 必填；`format`(generic/gemini/qwen) |
-| `locate_object` | 定位目标对象，返回坐标（让 LLM 输出坐标） | `image`、`target` 必填；`coords`(pixel/norm) |
+| `locate_object` | 定位目标对象，返回坐标（让 LLM 输出坐标）；`refine=true` 两阶段精修 | `image`、`target` 必填；`coords`(pixel/norm)、`refine` |
 | `ocr_image` | 逐文本块 OCR，带 bbox（像素+归一化） | `image` 必填；`language` |
 | `annotate_image` | 在图上画框/圆点/标签，保存标注图 | `image`、`items` 必填；`coords`、`out_path`、`style` |
 | `crop_image` | 按坐标裁切（可边缘外扩 expand_px） | `image`、`box` 必填；`coords`、`expand_px` |
@@ -193,3 +193,16 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
   - mermaid 复杂连线图实测：自动框选 4 节点 + 两轮交互式推理（SW 节点、Vout→LDO、反馈分压）
 - 修复：`load_image` 内置支持超大图（200MP），`items` 与 `auto_boxes` 可二选一
 - 测试增至 **85 项**（mock，不依赖真实 key）
+
+
+## v1.7（2026-08-02）
+
+- `locate_object` 新增 **`refine` 两阶段精修**：粗定位 → 裁切放大 → 二次定位 → 换算回原图坐标
+  - 实测（sample.png 蓝色按钮）：误差从 **70px 降到 20px**（y 方向完全精确）
+  - 原理：第一轮模型在整图上"估算"（受视觉 token 粒度限制），第二轮在放大的局部图上"细看"，消除整图量化误差
+- 测试增至 **88 项**（mock，不依赖真实 key）
+
+### 关于"框为什么歪"的已知边界（实测总结）
+- 根因：MiMo 视觉 token 粒度粗（200×100 图仅 18 个 image token）+ 无 grounding 专用训练 + 推理采样波动
+- 对比度强、形状规则的几何体（圆形/色块）定位 **0 误差**；圆角按钮/文字/PCB 元件边缘模糊时偏差 20-70px
+- 缓解手段（已内置）：`refine` 两阶段精修、`VISION_SAMPLES` 多次取样中位数、`scan_anomalies` 逐点验证、坐标钳制
