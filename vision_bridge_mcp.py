@@ -719,6 +719,179 @@ def tool_vision_health(args=None):
 
 
 
+
+
+# ----------------------------- 虚拟标注推理（annotate_infer） -----------------------------
+
+ANNOT_TYPES = ("box", "point", "line", "arrow", "circle")
+
+def _parse_annot_item(item, w, h):
+    """解析标注项 -> (type, label, color, geometry_pixel)。geometry_pixel: dict。"""
+    if not isinstance(item, dict):
+        raise VisionError("标注项必须是对象")
+    typ = str(item.get("type") or "box").lower()
+    if typ not in ANNOT_TYPES:
+        raise VisionError(f"不支持的标注类型: {typ}（支持: {', '.join(ANNOT_TYPES)}）")
+    label = str(item.get("label") or item.get("id") or "").strip()
+    color = str(item.get("color") or "#ff3b30")
+    coords = str(item.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords!r}")
+
+    def px(v, n):
+        if not isinstance(v, (list, tuple)) or len(v) != n:
+            raise VisionError(f"标注几何长度应为 {n}: {v!r}")
+        if coords == "norm":
+            return [round(float(v[0]) * w / 1000), round(float(v[1]) * h / 1000)] if n == 2 else                    [round(float(v[0]) * w / 1000), round(float(v[1]) * h / 1000),
+                    round(float(v[2]) * w / 1000), round(float(v[3]) * h / 1000)]
+        return [round(float(x)) for x in v]
+
+    if typ == "box":
+        box = px(item.get("box"), 4)
+        box, _ = _clamp_list(box, w, h)
+        return typ, label, color, {"box": box}
+    if typ == "point":
+        pt = px(item.get("point"), 2)
+        pt, _ = _clamp_list(pt, w, h)
+        return typ, label, color, {"point": pt}
+    if typ in ("line", "arrow"):
+        frm = px(item.get("from"), 2)
+        to = px(item.get("to"), 2)
+        frm, _ = _clamp_list(frm, w, h)
+        to, _ = _clamp_list(to, w, h)
+        return typ, label, color, {"from": frm, "to": to}
+    if typ == "circle":
+        c = px(item.get("center"), 2)
+        c, _ = _clamp_list(c, w, h)
+        try:
+            r = int(item.get("radius") or 20)
+        except (TypeError, ValueError):
+            r = 20
+        r = max(1, min(r, w, h))
+        return typ, label, color, {"center": c, "radius": r}
+    raise VisionError(f"未实现的标注类型: {typ}")
+
+def _annot_to_text(typ, label, color, geo):
+    name = label or {"box": "框", "point": "点", "line": "连线", "arrow": "箭头连线", "circle": "圆"}[typ]
+    if typ == "box":
+        b = geo["box"]
+        return f"{name}：框 [({b[0]},{b[1]}) -> ({b[2]},{b[3]})]（左上到右下，像素坐标）"
+    if typ == "point":
+        p = geo["point"]
+        return f"{name}：点 ({p[0]},{p[1]})"
+    if typ in ("line", "arrow"):
+        f, t = geo["from"], geo["to"]
+        return f"{name}：{'箭头连线' if typ == 'arrow' else '连线'} 从 ({f[0]},{f[1]}) 到 ({t[0]},{t[1]})"
+    if typ == "circle":
+        c, r = geo["center"], geo["radius"]
+        return f"{name}：圆 圆心 ({c[0]},{c[1]}) 半径 {r}px"
+    return ""
+
+def _draw_annot_overlay(draw, typ, label, color, geo, lw, fnt):
+    if typ == "box":
+        b = geo["box"]
+        draw.rectangle(b, outline=color, width=lw, fill=color + "33")
+        if label:
+            tb = draw.textbbox((0, 0), label, font=fnt)
+            draw.rectangle([b[0], max(0, b[1] - (tb[3] - tb[1]) - 6), b[0] + (tb[2] - tb[0]) + 8, b[1]], fill=color)
+            draw.text((b[0] + 4, max(0, b[1] - (tb[3] - tb[1]) - 4)), label, fill="white", font=fnt)
+    elif typ == "point":
+        p = geo["point"]
+        r = max(6, lw + 3)
+        draw.ellipse([p[0] - r, p[1] - r, p[0] + r, p[1] + r], fill=color)
+    elif typ in ("line", "arrow"):
+        f, t = geo["from"], geo["to"]
+        draw.line([f, t], fill=color, width=lw)
+        if typ == "arrow":
+            import math as _m
+            ang = _m.atan2(t[1] - f[1], t[0] - f[0])
+            hlen = 12
+            for da in (0.5, -0.5):
+                draw.line([t, (round(t[0] - hlen * _m.cos(ang + da)), round(t[1] - hlen * _m.sin(ang + da)))], fill=color, width=lw)
+    elif typ == "circle":
+        c, r = geo["center"], geo["radius"]
+        draw.ellipse([c[0] - r, c[1] - r, c[0] + r, c[1] + r], outline=color, width=lw, fill=color + "22")
+
+def tool_annotate_infer(args):
+    src = args["image"]
+    items = args.get("items")
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list) or not items:
+        raise VisionError("items 必须是标注数组（或单个对象）")
+    question = str(args.get("question") or "").strip()
+    if not question:
+        raise VisionError("缺少参数: question（推理问题）")
+    mode = str(args.get("mode") or "virtual").lower()
+    if mode not in ("virtual", "overlay"):
+        raise VisionError("mode 必须是 'virtual' 或 'overlay'")
+    try:
+        alpha = float(args.get("alpha") or 0.35)
+    except (TypeError, ValueError):
+        alpha = 0.35
+    if not 0 < alpha <= 1:
+        raise VisionError("alpha 必须在 (0, 1] 之间")
+
+    img, raw, label = load_image(src)
+    w, h = img.size
+    parsed = [_parse_annot_item(it, w, h) for it in items]
+    descs = [_annot_to_text(*p) for p in parsed]
+    annot_text = "\n".join(descs)
+
+    key = cache_key(raw, "annotate_infer", mode, question, annot_text, str(alpha))
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: annotate_infer")
+        return hit
+
+    base_prompt = (
+        "请分析这张图像，并结合以下**虚拟标注**（这些标注不是图像上的实际内容，"
+        "仅用于指示位置、区域和关系；请以标注为参考进行空间推理，并区分图像实际内容与标注）：\n"
+        + annot_text + f"\n推理问题：{question}\n请结合图像内容与标注关系给出分析。"
+    )
+
+    if mode == "virtual":
+        text = call_chat([
+            {"role": "system", "content": AUX_VISION_SYSTEM},
+            image_message(base_prompt, img),
+        ]).strip()
+        out = {"mode": "virtual", "answer": text, "annotations": len(items)}
+    else:
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        lw = max(2, min(6, w // 300))
+        fnt = _font(max(12, w // 60))
+        for typ, lbl, color, geo in parsed:
+            _draw_annot_overlay(od, typ, lbl, color, geo, lw, fnt)
+        overlay = overlay.point(lambda px: px)  # no-op 保持类型
+        import math  # noqa: F401
+        alpha_img = overlay
+        # 应用 alpha 缩放（通过色值强度近似：填充色已带 alpha hex，这里控制整体）
+        if alpha < 1.0:
+            a_layer = alpha_img.getchannel("A").point(lambda a: round(a * alpha))
+            alpha_img = alpha_img.copy()
+            alpha_img.putalpha(a_layer)
+        composite = Image.alpha_composite(img.convert("RGBA"), alpha_img).convert("RGB")
+        out_path = _unique_path("annotate_infer")
+        composite.save(out_path, "PNG")
+        prompt = (
+            "这张图像上已叠加半透明标注层（框/点/线/圆，叠加不会遮挡原图内容）。"
+            + base_prompt
+        )
+        text = call_chat([
+            {"role": "system", "content": AUX_VISION_SYSTEM},
+            image_message(prompt, composite),
+        ]).strip()
+        out = {
+            "mode": "overlay",
+            "answer": text,
+            "annotations": len(items),
+            "overlay_path": str(out_path),
+            "alpha": alpha,
+        }
+    cache_set(key, out)
+    return out
+
 # ----------------------------- 多图对比（compare_images） -----------------------------
 
 def tool_compare_images(args):
@@ -998,6 +1171,7 @@ HANDLERS = {
     "vision_health": tool_vision_health,
     "scan_anomalies": tool_scan_anomalies,
     "compare_images": tool_compare_images,
+    "annotate_infer": tool_annotate_infer,
 }
 
 TOOLS = [
@@ -1101,6 +1275,22 @@ TOOLS = [
         "name": "vision_health",
         "description": "检查视觉后端配置与连通性。",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "annotate_infer",
+        "description": "虚拟标注 + 增强图形推理：把框/点/连线/箭头/圆等标注（不修改原图）注入视觉模型，引导空间关系推理。mode=virtual 用坐标文本注入；mode=overlay 生成半透明叠加图。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "items": {"description": "标注数组或单个对象：[{type: box|point|line|arrow|circle, label, color, coords, box/point/from/to/center/radius}]"},
+                "question": {"type": "string", "description": "推理问题，如：框A中的元件是什么？A到B的连线代表什么连接关系？"},
+                "mode": {"type": "string", "enum": ["virtual", "overlay"], "description": "virtual=坐标文本注入（默认，原图零修改）；overlay=半透明叠加图"},
+                "alpha": {"type": "number", "description": "overlay 模式叠加透明度 (0,1]，默认 0.35"},
+                "detail": {"type": "string", "enum": ["brief", "balanced", "detailed"], "description": "细节程度"},
+            },
+            "required": ["image", "items", "question"],
+        },
     },
     {
         "name": "compare_images",

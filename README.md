@@ -9,7 +9,7 @@
 - 协议：手写 MCP stdio（JSON-RPC 2.0 + Content-Length 帧），兼容 Codex 桌面端/CLI
 - 灵感来源：HanaAgent 的 Vision Bridge（辅助视觉模型 + 结构化"视觉原语"）+ DeepSeek《Thinking with Visual Primitives》（坐标框/点 + 标签）
 
-## 工具一览（10 个）
+## 工具一览（11 个）
 
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
@@ -22,6 +22,7 @@
 | `zoom_region` | 区域放大（scale 1-8） | `image` 必填；`box`、`scale` |
 | `vision_health` | 检查后端配置与连通性 | 无 |
 | `compare_images` | **多图对比**（2-4 张）：A/B 截图对比、设计稿一致性、多帧分析 | `images` 必填（2-4 张）；`question`、`detail` |
+| `annotate_infer` | **虚拟标注 + 图形推理**：框/点/连线/箭头/圆注入视觉模型（原图零修改或半透明叠加），引导空间关系推理 | `image`、`items`、`question` 必填；`mode`(virtual/overlay)、`alpha` |
 | `scan_anomalies` | **自动异常扫描**：切块定位候选 → 高清逐点验证 → 输出带角度/丝印/置信度的报告 | `image` 必填；`target`、`region`、`verify`、`max_tiles` |
 
 坐标系统：所有工具接受 `coords="pixel"`（默认，MiMo 实测更准）或 `coords="norm"`（0–1000 归一化）；越界坐标自动钳制并返回 `clamped: true`。
@@ -169,3 +170,13 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
 - **修复 `sample.png` 中文渲染**：原测试图用 PIL 生成时 CJK 被渲染为 notdef（`?`），导致早期得出"中文 OCR 弱"的错误结论；改用 GDI+（System.Drawing）生成，中文显示与识别均正常
 - **修正实测结论**：MiMo V2.5 中文 OCR 正常（高铁站 LED 屏车次/站名、中文按钮文字均正确读取）
 - 演示图基于修复后的 `sample.png` 重新生成（标注框来自真实 `locate_object` 定位结果）
+
+
+## v1.5（2026-08-02）
+
+- 新增 `annotate_infer`：虚拟标注 + 增强图形推理
+  - `mode=virtual`（默认）：框/点/连线/箭头/圆等标注几何以坐标文本注入 prompt，**原图零修改**
+  - `mode=overlay`：生成半透明标注叠加层（alpha 可调，不遮挡原图），叠加后送模型推理
+  - 支持类型：`box` / `point` / `line` / `arrow` / `circle`，坐标支持 pixel/norm
+  - 实测：框 A=提交、框 B=Cancel 识别正确；箭头连线被推理为"操作闭环"布局语义
+- 测试增至 **71 项**（mock，不依赖真实 key）

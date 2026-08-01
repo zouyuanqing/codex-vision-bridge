@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 10 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 11 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -382,6 +382,47 @@ def test_scan_anomalies(api_base):
 
 
 
+
+def test_annotate_infer(api_base):
+    import vision_bridge_mcp as vb
+    from PIL import Image
+    reset_mock()
+    # virtual 模式
+    MockVisionHandler.responses.append("框A中是蓝色按钮，A到B的连线表示信号连接关系。")
+    img = make_img(200, 100, (240, 240, 240))
+    p = tmp_png("ai.png", img)
+    orig_bytes = open(p, "rb").read()
+    items = [
+        {"type": "box", "label": "A", "box": [10, 10, 90, 60], "color": "#ff3b30"},
+        {"type": "arrow", "label": "连线1", "from": [90, 35], "to": [150, 35], "color": "#00b0f0"},
+    ]
+    res = vb.tool_annotate_infer({"image": p, "items": items, "question": "A 和 B 的关系？", "mode": "virtual"})
+    check("ai virtual result", "关系" in res["answer"] and res["mode"] == "virtual", str(res)[:200])
+    req = MockVisionHandler.requests[-1]
+    text = req["messages"][1]["content"][0]["text"]
+    check("ai virtual prompt has annot", "虚拟标注" in text and "A" in text and "箭头连线" in text, text[:300])
+    check("ai virtual original untouched", open(p, "rb").read() == orig_bytes, "原图被修改!")
+    # overlay 模式
+    reset_mock()
+    MockVisionHandler.responses.append("叠加层中框A区域有元件。")
+    res2 = vb.tool_annotate_infer({"image": p, "items": items, "question": "框内是什么", "mode": "overlay", "alpha": 0.4})
+    check("ai overlay result", res2["mode"] == "overlay" and os.path.exists(res2["overlay_path"]), str(res2)[:200])
+    ov = Image.open(res2["overlay_path"]).convert("RGB")
+    check("ai overlay size", ov.size == (200, 100), str(ov.size))
+    check("ai overlay frame pixel", ov.getpixel((12, 12)) != (240, 240, 240), "框线未绘制")
+    check("ai overlay original visible", ov.getpixel((195, 95)) == (240, 240, 240), "原图被遮挡")
+    # 校验分支
+    try:
+        vb.tool_annotate_infer({"image": p, "items": items})
+        check("ai missing question", False, "should raise")
+    except vb.VisionError as e:
+        check("ai missing question", "question" in str(e), str(e))
+    try:
+        vb.tool_annotate_infer({"image": p, "items": [{"type": "polygon", "box": [0, 0, 10, 10]}], "question": "x"})
+        check("ai bad type", False, "should raise")
+    except vb.VisionError as e:
+        check("ai bad type", "不支持的标注类型" in str(e), str(e))
+
 def test_compare_images(api_base):
     import vision_bridge_mcp as vb
     reset_mock()
@@ -453,6 +494,8 @@ def main():
     test_prompt_upgrade(api_base)
     test_normalize_rotation(api_base)
     test_scan_anomalies(api_base)
+    print("== annotate_infer ==")
+    test_annotate_infer(api_base)
     print("== compare_images ==")
     test_compare_images(api_base)
     print("== verdict 解析 ==")
