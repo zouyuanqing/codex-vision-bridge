@@ -24,6 +24,26 @@
 
 坐标系统：所有工具接受 `coords="pixel"`（默认，MiMo 实测更准）或 `coords="norm"`（0–1000 归一化）；越界坐标自动钳制并返回 `clamped: true`。
 
+
+## 截图演示（Demo）
+
+使用仓库内 `sample.png`（测试样例图）走完整视觉原语工作流的效果：
+
+**定位 + 圈画标注**（`locate_object` 找到"蓝色提交按钮" → `annotate_image` 画框标注）：
+
+![工作流对比](docs/demo-workflow.png)
+
+**标注输出**（`annotate_image` 返回的标注图）：
+
+![标注演示](docs/demo-annotate.png)
+
+**按坐标裁切**（`crop_image`，裁出按钮区域）：
+
+![裁切演示](docs/demo-crop.png)
+
+**区域放大**（`zoom_region`，2 倍放大便于细节识别）：
+
+![放大演示](docs/demo-zoom.png)
 ## 安装与配置
 
 ### 1. 在 `~/.codex/config.toml` 追加
