@@ -9,7 +9,7 @@
 - 协议：手写 MCP stdio（JSON-RPC 2.0 + Content-Length 帧），兼容 Codex 桌面端/CLI
 - 灵感来源：HanaAgent 的 Vision Bridge（辅助视觉模型 + 结构化"视觉原语"）+ DeepSeek《Thinking with Visual Primitives》（坐标框/点 + 标签）
 
-## 工具一览（13 个）
+## 工具一览（21 个）
 
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
@@ -24,6 +24,9 @@
 | `compare_images` | **多图对比**（2-4 张）：A/B 截图对比、设计稿一致性、多帧分析 | `images` 必填（2-4 张）；`question`、`detail` |
 | `compare_infer` | **多图联合推理**：每图可带独立标注，联合推理差异/因果/时序/整体结论 | `images`、`question` 必填；`items_per_image`、`mode` |
 | `reason_graph` | **交互式图形推理协议**：原语(locate/measure) → 语义(semantic/hypothesis) → 标注(annotate/verify) 多轮循环，session 跨轮传递 | `image`、`step` 必填；`session`、`question` |
+| `screen_capture` | 截屏（全屏/区域），配合视觉工具实现「看屏幕」 | `region`、`out_path` 可选 |
+| `screen_info` | 屏幕分辨率 / DPI / 控制开关状态 | 无 |
+| `screen_click` / `screen_move` / `screen_drag` / `screen_scroll` / `screen_type` / `screen_key` | 鼠标键盘控制（需 `VISION_ALLOW_SCREEN_CONTROL=1`） | 坐标/按键参数 |
 | `annotate_infer` | **虚拟标注 + 图形推理**：框/点/连线/箭头/圆/多边形/气泡注入视觉模型（原图零修改或半透明叠加），支持多轮修正与自动框选 | `image`、`question` 必填；`items`/`auto_boxes` 至少其一；`mode`、`alpha`、`corrections` |
 | `scan_anomalies` | **自动异常扫描**：切块定位候选 → 高清逐点验证 → 输出带角度/丝印/置信度的报告 | `image` 必填；`target`、`region`、`verify`、`max_tiles` |
 
@@ -271,3 +274,19 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
   - **结论：像素坐标是本地小模型最稳定的输出格式**；比例坐标假设被实证否定，工具维持像素为主 + norm 换算输出
 - 修复 `extract_json`：逐位置 raw_decode 取代贪婪正则——现在能处理"JSON+LaTeX 尾巴 / 文本前缀 + JSON / 代码块"等混合输出（实验中发现 0-1000 模式因尾巴解析失败的 bug）
 - 测试增至 **108 项**（mock，不依赖真实 key）
+
+
+## v1.9（2026-08-02）— Computer Use（无视觉模型做电脑控制）
+
+- 新增 **8 个电脑控制工具**：`screen_capture`（截屏）/ `screen_info` / `screen_click` / `screen_move` / `screen_drag` / `screen_scroll` / `screen_type`（中文走剪贴板粘贴）/ `screen_key`（含 ctrl+shift 组合键）
+- 零依赖：ctypes + PIL ImageGrab（Windows）
+- **安全开关 `VISION_ALLOW_SCREEN_CONTROL`（默认关）**：关闭时所有控制类工具拒绝执行，只有截屏/信息可用——防止纯文本模型未经允许操控鼠标键盘
+- 电脑控制闭环（纯文本模型可用）：
+  ```
+  1. screen_capture → 截图
+  2. locate_object(截图, "确定按钮") → 坐标
+  3. screen_click(x, y) → 点击
+  4. screen_capture → 验证结果（视觉反馈循环）
+  ```
+- 实测：2560×1440 截屏成功；安全开关拒绝路径全部生效
+- 测试增至 **116 项**（mock，不依赖真实 key）

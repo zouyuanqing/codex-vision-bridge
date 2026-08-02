@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 13 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 21 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -522,6 +522,33 @@ def test_annotate_infer(api_base):
         check("ai bad type", "不支持的标注类型" in str(e), str(e))
 
 
+
+def test_screen_use(api_base):
+    import vision_bridge_mcp as vb
+    # 安全开关默认关闭：所有控制类工具必须拒绝
+    for tool, args in [
+        ("screen_click", {"x": 10, "y": 10}),
+        ("screen_move", {"x": 10, "y": 10}),
+        ("screen_drag", {"x1": 0, "y1": 0, "x2": 10, "y2": 10}),
+        ("screen_scroll", {"delta": 3}),
+        ("screen_type", {"text": "hello"}),
+        ("screen_key", {"key": "enter"}),
+    ]:
+        try:
+            vb.HANDLERS[tool](args)
+            check(f"screen guard {tool}", False, "should be blocked")
+        except vb.VisionError as e:
+            check(f"screen guard {tool}", "未启用" in str(e), str(e))
+    # screen_info
+    info = vb.tool_screen_info()
+    check("screen info", isinstance(info.get("screen_size"), list) and info["control_allowed"] is False, str(info))
+    # screen_capture 真截屏（Windows 有屏幕）
+    try:
+        cap = vb.tool_screen_capture({})
+        check("screen capture file", os.path.exists(cap["path"]) and cap["size"][0] > 0, str(cap))
+    except Exception as e:
+        check("screen capture file", False, str(e)[:200])
+
 def test_compare_infer(api_base):
     import vision_bridge_mcp as vb
     reset_mock()
@@ -663,6 +690,8 @@ def main():
     test_annotate_infer_v16(api_base)
     print("== annotate_infer ==")
     test_annotate_infer(api_base)
+    print("== computer use ==")
+    test_screen_use(api_base)
     print("== compare_infer / reason_graph ==")
     test_compare_infer(api_base)
     test_reason_graph(api_base)

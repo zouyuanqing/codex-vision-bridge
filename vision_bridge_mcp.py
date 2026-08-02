@@ -1169,6 +1169,191 @@ def tool_annotate_infer(args):
 
 
 
+
+
+# ----------------------------- 电脑控制（Computer Use） -----------------------------
+
+SCREEN_CONTROL_ALLOWED = _env("VISION_ALLOW_SCREEN_CONTROL", "0") == "1"
+
+_VK = {
+    "enter": 0x0D, "return": 0x0D, "tab": 0x09, "backspace": 0x08, "space": 0x20,
+    "escape": 0x1B, "esc": 0x1B, "delete": 0x2E, "insert": 0x2D,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+    "ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B, "capslock": 0x14,
+    "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74, "f6": 0x75,
+    "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+}
+
+def _require_screen_control():
+    if not SCREEN_CONTROL_ALLOWED:
+        raise VisionError("电脑控制未启用：请设置环境变量 VISION_ALLOW_SCREEN_CONTROL=1（注意：此开关会允许模型操控你的鼠标键盘）")
+
+def _user32():
+    import ctypes
+    return ctypes.windll.user32
+
+def _vk_for_char(ch):
+    o = ord(ch)
+    if 0x30 <= o <= 0x39 or 0x41 <= o <= 0x5A:
+        return o  # 数字/字母
+    return _VK.get(ch.lower())
+
+def _press_vk(vk, hold=0.03):
+    u = _user32()
+    u.keybd_event(vk, 0, 0, 0)
+    time.sleep(hold)
+    u.keybd_event(vk, 0, 2, 0)
+    time.sleep(0.02)
+
+def _key_combo(combo):
+    parts = [p.strip().lower() for p in combo.split("+")]
+    mods = [p for p in parts if p in ("ctrl", "shift", "alt", "win")]
+    keys = [p for p in parts if p not in ("ctrl", "shift", "alt", "win")]
+    u = _user32()
+    for m in mods:
+        u.keybd_event(_VK[m], 0, 0, 0)
+        time.sleep(0.03)
+    for k in keys:
+        if len(k) == 1 and _vk_for_char(k):
+            _press_vk(_vk_for_char(k))
+        elif k in _VK:
+            _press_vk(_VK[k])
+        else:
+            raise VisionError(f"不支持的按键: {k}")
+    for m in reversed(mods):
+        u.keybd_event(_VK[m], 0, 2, 0)
+        time.sleep(0.03)
+
+def tool_screen_capture(args):
+    region = args.get("region")
+    out_path = _resolve_out_path(args.get("out_path")) or _unique_path("screen")
+    try:
+        from PIL import ImageGrab
+    except ImportError:
+        raise VisionError("PIL ImageGrab 不可用（需要 Windows/带 GUI 环境）")
+    if region:
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            raise VisionError("region 必须是 [x1,y1,x2,y2]")
+        region = [int(v) for v in region]
+        if region[2] <= region[0] or region[3] <= region[1]:
+            raise VisionError("region 无效")
+        img = ImageGrab.grab(bbox=tuple(region))
+    else:
+        img = ImageGrab.grab()
+    img.save(out_path, "PNG")
+    return {"path": str(out_path), "size": [img.width, img.height], "region": region}
+
+def tool_screen_info(args=None):
+    u = _user32()
+    sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    import ctypes
+    dpi = 96
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        dpi = ctypes.windll.shcore.GetDpiForWindow(u.GetDesktopWindow())
+    except Exception:
+        pass
+    return {
+        "screen_size": [sw, sh],
+        "dpi": dpi,
+        "control_allowed": SCREEN_CONTROL_ALLOWED,
+        "note": "control_allowed=false 时点击/输入/滚动/拖拽/按键不可用（设 VISION_ALLOW_SCREEN_CONTROL=1 开启）",
+    }
+
+def tool_screen_click(args):
+    _require_screen_control()
+    x, y = int(args.get("x")), int(args.get("y"))
+    button = str(args.get("button") or "left").lower()
+    if button not in ("left", "right", "middle"):
+        raise VisionError(f"button 必须是 left/right/middle，收到: {button}")
+    double = args.get("double") in (True, "true", "1", 1)
+    u = _user32()
+    u.SetCursorPos(x, y)
+    time.sleep(0.05)
+    down = {"left": 0x0002, "right": 0x0008, "middle": 0x0020}[button]
+    up = {"left": 0x0004, "right": 0x0010, "middle": 0x0040}[button]
+    u.mouse_event(down, 0, 0, 0, 0)
+    time.sleep(0.05)
+    u.mouse_event(up, 0, 0, 0, 0)
+    if double:
+        time.sleep(0.05)
+        u.mouse_event(down, 0, 0, 0, 0)
+        time.sleep(0.05)
+        u.mouse_event(up, 0, 0, 0, 0)
+    return {"clicked": [x, y], "button": button, "double": double}
+
+def tool_screen_move(args):
+    _require_screen_control()
+    x, y = int(args.get("x")), int(args.get("y"))
+    _user32().SetCursorPos(x, y)
+    return {"moved_to": [x, y]}
+
+def tool_screen_drag(args):
+    _require_screen_control()
+    x1, y1, x2, y2 = (int(args.get(k)) for k in ("x1", "y1", "x2", "y2"))
+    duration = max(0.0, float(args.get("duration") or 0.2))
+    button = str(args.get("button") or "left").lower()
+    if button not in ("left", "right", "middle"):
+        raise VisionError(f"button 必须是 left/right/middle，收到: {button}")
+    u = _user32()
+    down = {"left": 0x0002, "right": 0x0008, "middle": 0x0020}[button]
+    up = {"left": 0x0004, "right": 0x0010, "middle": 0x0040}[button]
+    u.SetCursorPos(x1, y1)
+    time.sleep(0.05)
+    u.mouse_event(down, 0, 0, 0, 0)
+    steps = max(1, int(duration * 50))
+    for i in range(1, steps + 1):
+        cx = x1 + (x2 - x1) * i // steps
+        cy = y1 + (y2 - y1) * i // steps
+        u.SetCursorPos(cx, cy)
+        time.sleep(duration / steps)
+    u.mouse_event(up, 0, 0, 0, 0)
+    return {"dragged": [[x1, y1], [x2, y2]], "button": button}
+
+def tool_screen_scroll(args):
+    _require_screen_control()
+    delta = int(args.get("delta") or 0)
+    if delta == 0:
+        raise VisionError("delta 不能为 0（正=向上滚，负=向下滚）")
+    _user32().mouse_event(0x0800, 0, 0, delta * 120, 0)
+    return {"scrolled": delta}
+
+def tool_screen_type(args):
+    _require_screen_control()
+    text = str(args.get("text") or "")
+    if not text:
+        raise VisionError("text 不能为空")
+    # 纯 ASCII 直接按键；含非 ASCII（中文等）走剪贴板粘贴
+    if all(ord(c) < 128 for c in text):
+        for ch in text:
+            vk = _vk_for_char(ch)
+            if vk is None:
+                raise VisionError(f"不支持的字符: {ch!r}")
+            _press_vk(vk)
+        return {"typed": text, "method": "keyboard"}
+    import subprocess
+    enc = text.encode("utf-8")
+    subprocess.run(["powershell", "-NoProfile", "-Command", "[Console]::InputEncoding=[Text.Encoding]::UTF8; Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + base64.b64encode(enc).decode() + "')))"], creationflags=0x08000000, timeout=30)
+    _key_combo("ctrl+v")
+    return {"typed": text, "method": "clipboard"}
+
+def tool_screen_key(args):
+    _require_screen_control()
+    key = str(args.get("key") or "").strip().lower()
+    if not key:
+        raise VisionError("key 不能为空（如 enter / tab / ctrl+c / alt+tab）")
+    if "+" in key:
+        _key_combo(key)
+        return {"pressed": key, "combo": True}
+    if len(key) == 1 and _vk_for_char(key):
+        _press_vk(_vk_for_char(key))
+        return {"pressed": key}
+    if key in _VK:
+        _press_vk(_VK[key])
+        return {"pressed": key}
+    raise VisionError(f"不支持的按键: {key}")
+
 # ----------------------------- 多图联合推理（compare_infer） -----------------------------
 
 def tool_compare_infer(args):
@@ -1703,6 +1888,14 @@ HANDLERS = {
     "annotate_infer": tool_annotate_infer,
     "compare_infer": tool_compare_infer,
     "reason_graph": tool_reason_graph,
+    "screen_capture": tool_screen_capture,
+    "screen_info": tool_screen_info,
+    "screen_click": tool_screen_click,
+    "screen_move": tool_screen_move,
+    "screen_drag": tool_screen_drag,
+    "screen_scroll": tool_screen_scroll,
+    "screen_type": tool_screen_type,
+    "screen_key": tool_screen_key,
 }
 
 TOOLS = [
@@ -1824,6 +2017,85 @@ TOOLS = [
                 "detail": {"type": "string", "enum": ["brief", "balanced", "detailed"], "description": "细节程度"},
             },
             "required": ["image", "items", "question"],
+        },
+    },
+    {
+        "name": "screen_capture",
+        "description": "截屏（全屏或指定区域），保存 PNG 并返回路径。配合 locate_object/describe 实现「看屏幕」。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "可选 [x1,y1,x2,y2] 屏幕坐标区域，默认全屏"},
+                "out_path": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "screen_info",
+        "description": "屏幕信息：分辨率、DPI、电脑控制开关状态。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "screen_click",
+        "description": "鼠标点击（需 VISION_ALLOW_SCREEN_CONTROL=1）。坐标通常来自 locate_object 对截图的定位结果。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "默认 left"},
+                "double": {"type": "boolean", "description": "是否双击，默认 false"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "screen_move",
+        "description": "仅移动鼠标光标（需 VISION_ALLOW_SCREEN_CONTROL=1）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "screen_drag",
+        "description": "鼠标拖拽（需 VISION_ALLOW_SCREEN_CONTROL=1）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x1": {"type": "number"}, "y1": {"type": "number"}, "x2": {"type": "number"}, "y2": {"type": "number"},
+                "duration": {"type": "number", "description": "拖拽时长秒，默认 0.2"},
+                "button": {"type": "string", "enum": ["left", "right", "middle"]},
+            },
+            "required": ["x1", "y1", "x2", "y2"],
+        },
+    },
+    {
+        "name": "screen_scroll",
+        "description": "滚轮滚动（需 VISION_ALLOW_SCREEN_CONTROL=1）。正数向上，负数向下。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"delta": {"type": "number", "description": "滚动格数（正=上，负=下）"}},
+            "required": ["delta"],
+        },
+    },
+    {
+        "name": "screen_type",
+        "description": "键盘输入文本（需 VISION_ALLOW_SCREEN_CONTROL=1）。ASCII 直接按键；中文等经剪贴板粘贴。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "screen_key",
+        "description": "按键或组合键（需 VISION_ALLOW_SCREEN_CONTROL=1）。如 enter / tab / ctrl+c / alt+tab。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"key": {"type": "string", "description": "单个按键或 ctrl+shift+key 组合"}},
+            "required": ["key"],
         },
     },
     {
