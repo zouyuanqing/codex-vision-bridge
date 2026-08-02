@@ -1,3 +1,9 @@
+> ## ⚠️ 项目已迁移
+>
+> 本项目已更名为 **vision-primitives-mcp**，新仓库：[github.com/zouyuanqing/vision-primitives-mcp](https://github.com/zouyuanqing/vision-primitives-mcp)
+>
+> 本仓库保留为历史归档，不再更新。新 issue 与讨论请前往新仓库。
+
 # Vision Primitives MCP v3 — 交互式视觉原语 MCP 插件
 
 让纯文本模型（如 `deepseek-v4-flash`）通过 MCP 工具获得完整"看图 + 操作图片"能力：
