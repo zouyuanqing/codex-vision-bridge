@@ -2161,14 +2161,38 @@ TOOLS = [
 
 # ----------------------------- MCP stdio 协议 -----------------------------
 
+# 双协议支持：标准 Content-Length 帧（Codex/Claude 等）与 JSONL 行传输（Hana 等）。
+# 检测到 JSONL 输入后自动切换，之后所有响应都以 JSONL 输出。
+JSONL_MODE = {"on": False}
+
+
 def write_frame(stream, obj):
     payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-    stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("utf-8"))
-    stream.write(payload)
+    if JSONL_MODE["on"]:
+        stream.write(payload + b"\n")
+    else:
+        stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("utf-8"))
+        stream.write(payload)
     stream.flush()
 
+
 def read_frame(stream):
+    first = stream.readline()
+    if not first:
+        return None
+    stripped = first.strip()
+    if stripped.startswith(b"{"):
+        # JSONL 模式：一行一个 JSON 消息，自动切换输出协议
+        JSONL_MODE["on"] = True
+        try:
+            return json.loads(stripped.decode("utf-8"))
+        except json.JSONDecodeError:
+            return None
+    # 标准 Content-Length 帧：首行是头，继续读完剩余头
     headers = {}
+    if b":" in first:
+        k, v = first.split(b":", 1)
+        headers[k.strip().lower()] = v.strip()
     while True:
         line = stream.readline()
         if not line:
@@ -2190,8 +2214,8 @@ def read_frame(stream):
     except json.JSONDecodeError:
         return None
 
-def _text_result(text, is_error=False):
-    return {"result": {"content": [{"type": "text", "text": text}], "isError": is_error}}
+def _text_result(rid, text, is_error=False):
+    return {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": text}], "isError": is_error}}
 
 def _error(rid, code, message):
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
@@ -2202,13 +2226,14 @@ def handle_message(msg):
     method = msg.get("method")
     rid = msg.get("id")
     if method == "initialize":
+        req_pv = (msg.get("params") or {}).get("protocolVersion", "2025-06-18")
         return {
             "jsonrpc": "2.0",
             "id": rid,
             "result": {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "codex-vision-bridge", "version": "1.0.0"},
+                "serverInfo": {"name": "codex-vision-bridge", "version": "1.1.0"},
             },
         }
     if method == "notifications/initialized":
@@ -2234,15 +2259,15 @@ def handle_message(msg):
         try:
             result = handler(args)
             if isinstance(result, str):
-                return _text_result(result)
-            return _text_result(json.dumps(result, ensure_ascii=False, indent=2))
+                return _text_result(rid, result)
+            return _text_result(rid, json.dumps(result, ensure_ascii=False, indent=2))
         except McpParamError as e:
             return _error(rid, -32602, f"Invalid params: {e}")
         except VisionError as e:
-            return _text_result(f"错误: {e}", is_error=True)
+            return _text_result(rid, f"错误: {e}", is_error=True)
         except Exception as e:
             log("tool crash:", name, e)
-            return _text_result(f"内部错误: {e}", is_error=True)
+            return _text_result(rid, f"内部错误: {e}", is_error=True)
     if rid is not None:
         return _error(rid, -32601, f"未知方法: {method}")
     return None

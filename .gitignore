@@ -11,3 +11,6 @@ __pycache__/
 test/pcb_scan.py
 test/pcb_verify.py
 test/scan2.py
+
+# 本地备份
+*.bak-*
