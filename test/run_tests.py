@@ -140,7 +140,7 @@ def test_protocol_over_stdio(api_base):
     try:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}})
         r = recv()
-        check("initialize", r.get("result", {}).get("protocolVersion") == "2025-06-18" and r["result"]["serverInfo"]["name"] == "codex-vision-bridge", str(r)[:200])
+        check("initialize", r.get("result", {}).get("protocolVersion") == "2025-06-18" and r["result"]["serverInfo"]["name"] == "vision-primitives-mcp", str(r)[:200])
 
         send({"jsonrpc": "2.0", "id": 2, "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})

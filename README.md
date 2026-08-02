@@ -1,4 +1,4 @@
-# Codex Vision Bridge v3 — 交互式视觉原语 MCP 插件
+# Vision Primitives MCP v3 — 交互式视觉原语 MCP 插件
 
 让纯文本模型（如 `deepseek-v4-flash`）通过 MCP 工具获得完整"看图 + 操作图片"能力：
 **看图 → 定位（输出坐标）→ 圈画标注 → 裁切/放大 → OCR 提取** 的多步交互闭环，处理后的图片可直接交还展示。

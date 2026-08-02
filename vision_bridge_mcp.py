@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Codex Vision Bridge - 交互式视觉原语 MCP Server
+Vision Primitives MCP - 交互式视觉原语 MCP Server
 让纯文本模型（如 deepseek-v4-flash）通过 MCP 工具获得"看图 + 视觉原语"能力：
   describe / analyze / locate(输出坐标) / OCR(带坐标) / annotate(圈画) / crop(裁切) / zoom(放大) / health
 视觉后端：小米 MiMo V2.5（OpenAI 兼容 /v1/chat/completions，图片走 data URL）
@@ -92,7 +92,7 @@ def log(*args):
 def load_image(src):
     """返回 (PIL.Image(RGB), 原始字节, 来源标签)。支持本地路径或 http(s) URL。"""
     if src.startswith(("http://", "https://")):
-        req = urllib.request.Request(src, headers={"User-Agent": "codex-vision-bridge/1.0"})
+        req = urllib.request.Request(src, headers={"User-Agent": "vision-primitives-mcp/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = r.read()
@@ -2233,7 +2233,7 @@ def handle_message(msg):
             "result": {
                 "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "codex-vision-bridge", "version": "1.1.0"},
+                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.1.0"},
             },
         }
     if method == "notifications/initialized":
