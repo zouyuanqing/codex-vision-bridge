@@ -64,6 +64,14 @@
 
 ![定位效果对比矩阵](docs/demo-locate-matrix.png)
 
+**Computer Use 实战**（纯文本模型真实操控电脑：打开 B 站 → 刷新 → 定位并点击第一个视频 → 验证进入播放页）：
+
+![电脑控制点击前](docs/demo-cu-before.png)
+
+![电脑控制点击后](docs/demo-cu-after.png)
+
+完整报告见 [docs/computer-use-test-report.md](docs/computer-use-test-report.md)。
+
 ## 安装与配置
 
 ### 1. 在 `~/.codex/config.toml` 追加
